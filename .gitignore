@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller / Artefatos de compilação e executáveis
+build/
+dist/
+_bin/
+*.exe
+*.spec
+
+# Pastas de saída e dados de cursos gerados localmente
+saida/
+curso_*/
+*.log
+
+# Arquivos temporários do Microsoft Office (quando planilhas/apresentações estão abertas)
+~$*.xlsx
+~$*.pptx
+~$*.docx
+
+# Ambientes virtuais Python
+.venv/
+venv/
+env/
+ENV/
+
+# IDEs e configurações de editores
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Arquivos de sistema operacional
+Thumbs.db
+Desktop.ini
+.DS_Store

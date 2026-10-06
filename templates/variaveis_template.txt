@@ -1,0 +1,83 @@
+# ============================================================
+# CONFIGURAÇÕES DO CURSO E CERTIFICADOS
+# Preencha os campos abaixo com as informações do seu curso.
+# Linhas iniciadas com '#' são apenas comentários e instruções.
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. DADOS GERAIS DO CURSO
+# ------------------------------------------------------------
+# Nome completo do curso (como aparecerá no certificado)
+NOME_DO_CURSO = {NOME_DO_CURSO}
+
+# Carga horária total do curso em horas (apenas números, ex: 16 ou 20)
+CARGA_HORARIA = 20
+
+# Custo total do curso em reais (ex: 5000.00 ou 5000,00)
+CUSTO_TOTAL_EM_REAIS = 0.00
+
+# Data de início no formato DD/MM/AAAA (ex: 17/08/2026)
+DATA_INICIO = 17/08/2026
+
+# Data de término no formato DD/MM/AAAA (ex: 21/08/2026)
+# Caso o curso seja de apenas 1 dia, deixe em branco: DATA_FIM =
+DATA_FIM = 21/08/2026
+
+
+# ------------------------------------------------------------
+# 2. INFORMAÇÕES DE EMISSÃO DO CERTIFICADO
+# ------------------------------------------------------------
+# Local de emissão do certificado
+LOCAL_EMISSAO = Brasília — DF
+
+# Data de emissão impressa no certificado no formato DD/MM/AAAA
+DATA_EMISSAO = 21/08/2026
+
+
+# ------------------------------------------------------------
+# 3. CRITÉRIOS DE APROVAÇÃO E APURAÇÃO DE PRESENÇA
+# ------------------------------------------------------------
+# Percentual mínimo de carga horária para aprovação (ex: 0.75 para 75%)
+PERCENTUAL_MINIMO_CARGA = 0.75
+
+# Percentual mínimo de presença nos encontros para aprovação (ex: 0.75 para 75%)
+PERCENTUAL_MINIMO_ENCONTROS = 0.75
+
+# Tempo mínimo em minutos de permanência na reunião de cada encontro para computar presença (padrão: 30)
+TEMPO_MINIMO_PRESENCA_MINUTOS = 30
+
+
+# ------------------------------------------------------------
+# 4. E-MAILS A IGNORAR NOS RELATÓRIOS
+# Insira os e-mails (um por linha) que devem ser desconsiderados
+# na apuração de presença e na emissão dos relatórios (ex: organizadores,
+# instrutores, apoio técnico ou suporte).
+# ------------------------------------------------------------
+[INICIO_IGNORAR_EMAILS]
+organizador1@exemplo.gov.br
+organizador2@exemplo.gov.br
+organizador3@exemplo.gov.br
+[FIM_IGNORAR_EMAILS]
+
+
+# ------------------------------------------------------------
+# 5. COMUNICAÇÃO E ENVIO POR E-MAIL
+# Configure o assunto e a mensagem que acompanhará o certificado.
+# Você pode utilizar os marcadores {nome} e {CURSO}.
+# ------------------------------------------------------------
+# Assunto do e-mail que será enviado aos participantes (use {CURSO} para o nome do curso)
+ASSUNTO_EMAIL = Certificado - Curso {CURSO}
+
+[INICIO_CORPO_EMAIL]
+Prezada(o) {nome},
+
+Esta é uma mensagem automatizada. Não é necessário respondê-la.
+
+Encaminhamos, em anexo, o certificado referente à sua participação no curso “{CURSO}”.
+
+Agradecemos pela participação.
+
+Atenciosamente,
+
+Superintendência de Gestão de Pessoas – SGP/ANM
+[FIM_CORPO_EMAIL]

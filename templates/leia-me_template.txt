@@ -1,0 +1,67 @@
+================================================================================
+INSTRUÇÕES DE USO - GERADOR DE CERTIFICADOS
+================================================================================
+
+Bem-vindo! Esta pasta contém toda a estrutura para processar as presenças,
+gerar os certificados e enviar os e-mails aos participantes.
+
+Siga os 4 passos abaixo:
+
+--------------------------------------------------------------------------------
+PASSO 1: CONFIGURAÇÃO DE VARIÁVEIS
+--------------------------------------------------------------------------------
+Abra o arquivo 'variaveis.txt' no Bloco de Notas:
+- Ajuste as datas de início e fim (formato DD/MM/AAAA).
+- Ajuste a carga horária em horas.
+- Ajuste o local e a data de emissão.
+- Se desejar, personalize o texto do e-mail.
+- Salve e feche o arquivo.
+
+--------------------------------------------------------------------------------
+PASSO 2: INSERIR OS ARQUIVOS NAS PASTAS
+--------------------------------------------------------------------------------
+Coloque os arquivos correspondentes dentro de cada pasta:
+
+1. 'lista_convidados/':
+   - Coloque o arquivo CSV com a lista de convocados exportada do Teams.
+   - Deve conter apenas 1 arquivo .csv nesta pasta.
+
+2. 'lista_servidores/':
+   - Coloque a planilha Excel (.xlsx) contendo todos os servidores da ANM e UORGs.
+   - Deve conter apenas 1 arquivo .xlsx nesta pasta.
+
+3. 'listas_de_presenca/':
+   - Coloque as listas de presenças dos encontros exportadas do Teams (.csv ou .tsv).
+   - Pode colocar quantas listas forem necessárias (uma por encontro).
+
+4. 'modelo_certificado/':
+   - Coloque o arquivo do PowerPoint (.pptx ou .pptm) com o modelo do certificado.
+   - Deve conter os marcadores: <<NOME>>, <<CURSO>>, <<CARGA_HORARIA>>,
+     <<DATA_EMISSAO>>, <<LOCAL_EMISSAO>>, etc.
+   - Deve conter apenas 1 arquivo de modelo nesta pasta.
+
+--------------------------------------------------------------------------------
+PASSO 3: EXECUTAR AS ETAPAS EM ORDEM
+--------------------------------------------------------------------------------
+1. Execute 'gerar_relatorio.exe'
+   - O sistema irá validar todos os arquivos, pastas e variáveis.
+   - Se houver algum erro ou arquivo faltando, ele indicará exatamente onde corrigir.
+   - Se tudo estiver correto, gerará o relatório Excel na pasta 'saida/relatorio_presencas/'.
+
+2. Execute 'gerar_certificados.exe'
+   - Irá ler os aprovados do relatório e gerar os certificados individuais (PPT e PDF).
+   - Você também poderá optar por juntar todos os certificados em um único PDF
+     ou rodar a junção separadamente caso adicione certificados manuais depois.
+
+3. Execute 'enviar_emails.exe'
+   - Permite enviar um e-mail de teste no Outlook para conferência visual.
+   - Permite enviar automaticamente os certificados para todos os participantes aptos.
+   - Salva o registro completo dos envios em 'saida/logs/'.
+
+--------------------------------------------------------------------------------
+DICA:
+Ao finalizar tudo, você pode apagar os arquivos executáveis (.exe) desta pasta
+para economizar espaço em disco. Se precisar executá-los novamente no futuro,
+basta abrir o 'criar_curso.exe' na pasta principal e escolher a opção
+"Restaurar executáveis".
+================================================================================

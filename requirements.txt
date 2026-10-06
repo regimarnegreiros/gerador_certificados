@@ -1,0 +1,7 @@
+# Dependências do projeto Gerador de Certificados (desenvolvido para a ANM)
+pandas>=2.2.0
+openpyxl>=3.1.2
+python-pptx>=1.0.0
+pypdf>=5.0.0
+pywin32>=306
+pyinstaller>=6.0.0
