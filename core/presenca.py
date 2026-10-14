@@ -20,6 +20,7 @@ from openpyxl.styles import (
     Border,
     Side
 )
+from openpyxl.utils import get_column_letter
 from typing import Tuple, List, Dict, Any, Optional, Set, Collection
 from core.caminhos import (
     caminho_estendido,
@@ -1872,6 +1873,99 @@ def formatar_aba_custos(planilha, estilos):
             cel_val.font = Font(name="Calibri", size=11, bold=False, color="000000")
 
 
+def formatar_aba_presencas(
+    planilha,
+    workbook,
+    estilos: Dict[str, Any],
+    datas_encontros: Optional[List[str]] = None,
+):
+    """
+    Aplica formatação específica e refinada para a aba 'Presenças':
+    - Mescla os títulos 'Encontro n' e 'Comparecimento n' em um título único por encontro contendo ID e data (ex: 'Encontro 1 — 14/09/2026').
+    - Centraliza as colunas de duração e comparecimento.
+    - Aplica negrito nas faltas ('Ausente') e tempo zerado ('00:00:00').
+    - Define larguras balanceadas para as colunas.
+    """
+    if datas_encontros is None and "Interações por encontro" in workbook.sheetnames:
+        sheet_int = workbook["Interações por encontro"]
+        col_data_idx = None
+        for col_idx in range(1, sheet_int.max_column + 1):
+            if str(sheet_int.cell(row=1, column=col_idx).value).strip() == "Data":
+                col_data_idx = col_idx
+                break
+        if col_data_idx is not None:
+            datas_encontros = []
+            for r in range(2, sheet_int.max_row + 1):
+                val = sheet_int.cell(row=r, column=col_data_idx).value
+                datas_encontros.append(str(val).strip() if val is not None else "")
+
+    num_encontros = (planilha.max_column - 1) // 2
+    if num_encontros < 1:
+        return
+
+    # 1. Mescla os cabeçalhos dos encontros com ID e data
+    planilha.row_dimensions[1].height = 28
+    for idx in range(1, num_encontros + 1):
+        col_inicio = 2 * idx
+        col_fim = 2 * idx + 1
+        if col_fim > planilha.max_column:
+            break
+
+        data_str = ""
+        if datas_encontros and idx - 1 < len(datas_encontros):
+            data_str = str(datas_encontros[idx - 1] or "").strip()
+
+        titulo = f"Encontro {idx} — {data_str}" if data_str else f"Encontro {idx}"
+
+        planilha.cell(row=1, column=col_inicio, value=titulo)
+        planilha.cell(row=1, column=col_fim, value=None)
+
+        faixa = f"{get_column_letter(col_inicio)}1:{get_column_letter(col_fim)}1"
+        ja_mesclado = any(str(r) == faixa for r in planilha.merged_cells.ranges)
+        if not ja_mesclado:
+            planilha.merge_cells(start_row=1, start_column=col_inicio, end_row=1, end_column=col_fim)
+
+    # 2. Estilização do cabeçalho
+    for col_idx in range(1, planilha.max_column + 1):
+        cel = planilha.cell(row=1, column=col_idx)
+        cel.fill = estilos["cabecalho_fill"]
+        cel.font = estilos["cabecalho_font"]
+        cel.alignment = Alignment(horizontal="center", vertical="center")
+
+    # 3. Formatação das linhas de dados (zebra, alinhamento e destaque de 'Ausente')
+    for num_linha in range(2, planilha.max_row + 1):
+        planilha.row_dimensions[num_linha].height = 22
+        cor_linha = estilos["linha_par"] if num_linha % 2 == 0 else estilos["linha_impar"]
+
+        for col_idx in range(1, planilha.max_column + 1):
+            cel = planilha.cell(row=num_linha, column=col_idx)
+            cel.fill = cor_linha
+            if col_idx == 1:
+                cel.alignment = Alignment(horizontal="left", vertical="center")
+            else:
+                cel.alignment = Alignment(horizontal="center", vertical="center")
+
+        for idx in range(1, num_encontros + 1):
+            col_dur = 2 * idx
+            col_comp = 2 * idx + 1
+            if col_comp <= planilha.max_column:
+                cel_dur = planilha.cell(row=num_linha, column=col_dur)
+                cel_comp = planilha.cell(row=num_linha, column=col_comp)
+                if str(cel_comp.value).strip().upper() == "AUSENTE":
+                    cel_comp.font = Font(name="Calibri", size=11, bold=True, color="000000")
+                    cel_dur.font = Font(name="Calibri", size=11, bold=True, color="000000")
+                else:
+                    cel_comp.font = Font(name="Calibri", size=11, bold=False, color="000000")
+                    cel_dur.font = Font(name="Calibri", size=11, bold=False, color="000000")
+
+    # 4. Largura das colunas
+    maior_nome = max((len(str(c.value)) for c in planilha["A"] if c.value is not None), default=0)
+    planilha.column_dimensions["A"].width = max(maior_nome + 4, 30)
+    for col_idx in range(2, planilha.max_column + 1):
+        letra = get_column_letter(col_idx)
+        planilha.column_dimensions[letra].width = 17
+
+
 def ajustar_largura_colunas(planilha):
     """Ajusta automaticamente a largura de cada coluna."""
     if planilha.title == "Informações do Curso":
@@ -1898,9 +1992,10 @@ def ajustar_largura_colunas(planilha):
                 planilha.column_dimensions[letra].width = min(max(maior + 4, 50), 75)
         return
 
-    if planilha.title in ("Indicadores", "Custos"):
-        planilha.column_dimensions["A"].width = 36
-        planilha.column_dimensions["B"].width = 24
+    if planilha.title in ("Indicadores", "Custos", "Presenças"):
+        if planilha.title in ("Indicadores", "Custos"):
+            planilha.column_dimensions["A"].width = 36
+            planilha.column_dimensions["B"].width = 24
         return
 
     for coluna in planilha.columns:
@@ -1917,7 +2012,7 @@ def formatar_cabecalho(planilha, estilos):
         celula.font = estilos["cabecalho_font"]
 
 
-def formatar_workbook(workbook):
+def formatar_workbook(workbook, datas_encontros: Optional[List[str]] = None):
     """Aplica formatação a todas as abas da planilha."""
     estilos = criar_estilos()
     for sheet in workbook.worksheets:
@@ -1931,6 +2026,8 @@ def formatar_workbook(workbook):
             formatar_aba_indicadores(sheet, estilos)
         elif sheet.title == "Custos":
             formatar_aba_custos(sheet, estilos)
+        elif sheet.title == "Presenças":
+            formatar_aba_presencas(sheet, workbook, estilos, datas_encontros=datas_encontros)
 
 
 def exportar_excel(
@@ -1942,6 +2039,7 @@ def exportar_excel(
     df_interacoes_encontro: Optional[pd.DataFrame] = None,
     df_indicadores: Optional[pd.DataFrame] = None,
     df_custos: Optional[pd.DataFrame] = None,
+    datas_encontros: Optional[List[str]] = None,
 ):
     """
     Salva planilha formatada contendo:
@@ -1963,6 +2061,9 @@ def exportar_excel(
         caminho_alvo = Path(caminho_saida)
         aba_presencas = None
 
+    if datas_encontros is None and df_interacoes_encontro is not None and "Data" in df_interacoes_encontro.columns:
+        datas_encontros = [str(d).strip() if pd.notna(d) else "" for d in df_interacoes_encontro["Data"]]
+
     nome_seguro = sanitizar_nome_arquivo(caminho_alvo.stem) + caminho_alvo.suffix
     caminho_alvo = caminho_alvo.parent / nome_seguro
     garantir_diretorio(caminho_alvo.parent)
@@ -1982,7 +2083,7 @@ def exportar_excel(
                 df_custos.to_excel(writer, sheet_name="Custos", index=False)
             if df_informacoes is not None and not df_informacoes.empty:
                 df_informacoes.to_excel(writer, sheet_name="Informações do Curso", index=False)
-            formatar_workbook(writer.book)
+            formatar_workbook(writer.book, datas_encontros=datas_encontros)
 
     try:
         _gravar(caminho_alvo)
@@ -2150,6 +2251,20 @@ def gerar_relatorio(
     nome_arquivo_seguro = sanitizar_nome_arquivo(caminho_saida_excel.stem) + caminho_saida_excel.suffix
     caminho_saida_excel = caminho_saida_excel.parent / nome_arquivo_seguro
 
+    datas_encontros = []
+    for arq, resumo in zip(arquivos_presenca, lista_resumos):
+        dt_res = resumo.get("data")
+        if not dt_res:
+            try:
+                dt, _ = obter_chave_ordenacao_arquivo(arq)
+                if dt and dt.year not in (1970, 9999):
+                    dt_res = dt.strftime("%d/%m/%Y")
+            except Exception:
+                pass
+        if not dt_res and config and config.get("DATA_INICIO"):
+            dt_res = str(config["DATA_INICIO"])
+        datas_encontros.append(dt_res or "")
+
     print(f"-> Formatando e salvando planilha em: {caminho_saida_excel.name}...")
     garantir_diretorio(caminho_saida_excel.parent)
     exportar_excel(
@@ -2161,6 +2276,7 @@ def gerar_relatorio(
         df_interacoes_encontro=df_interacoes_encontro,
         df_indicadores=df_indicadores,
         df_custos=df_custos,
+        datas_encontros=datas_encontros,
     )
 
     total_aptos = (df_certificacao["Apto por CH"] == "APTO").sum()

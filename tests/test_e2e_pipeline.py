@@ -176,13 +176,23 @@ class TestE2EPipeline(unittest.TestCase):
             ]
         )
 
-        # Valida conteúdo da aba 'Presenças' (apenas Nome e colunas dos encontros)
+        # Valida conteúdo da aba 'Presenças' com títulos mesclados (ID e data)
         df_presencas_excel = pd.read_excel(saida_excel, sheet_name="Presenças")
         self.assertEqual(
             list(df_presencas_excel.columns),
-            ["Nome", "Encontro 1", "Comparecimento 1", "Encontro 2", "Comparecimento 2"]
+            ["Nome", "Encontro 1 — 14/09/2026", "Unnamed: 2", "Encontro 2 — 15/09/2026", "Unnamed: 4"]
         )
         self.assertEqual(list(df_presencas_excel["Nome"]), ["ALICE SILVA", "BRUNO SOUZA", "CARLOS PEREIRA"])
+
+        # Valida que as células de cabeçalho dos encontros estão mescladas no Excel
+        import openpyxl
+        wb_check = openpyxl.load_workbook(saida_excel)
+        ws_pres = wb_check["Presenças"]
+        merged_faixas = {str(r) for r in ws_pres.merged_cells.ranges}
+        self.assertIn("B1:C1", merged_faixas)
+        self.assertIn("D1:E1", merged_faixas)
+        self.assertEqual(ws_pres["B1"].value, "Encontro 1 — 14/09/2026")
+        self.assertEqual(ws_pres["D1"].value, "Encontro 2 — 15/09/2026")
 
         # Valida Aba 1: 'Interações por participante'
         df_int_part_excel = pd.read_excel(saida_excel, sheet_name="Interações por participante")
@@ -379,10 +389,10 @@ class TestE2EPipeline(unittest.TestCase):
         # No dia 1, Carlos Pereira estava AUSENTE ("00:00:00") e no dia 2 estava PRESENTE ("04:00:00")
         df_pres = pd.read_excel(saida_excel, sheet_name="Presenças")
         carlos = df_pres[df_pres["Nome"] == "CARLOS PEREIRA"].iloc[0]
-        self.assertEqual(carlos["Encontro 1"], "00:00:00")
-        self.assertEqual(carlos["Comparecimento 1"], "Ausente")
-        self.assertIn(carlos["Encontro 2"], ("4:00:00", "04:00:00"))
-        self.assertEqual(carlos["Comparecimento 2"], "Presente")
+        self.assertEqual(carlos["Encontro 1 — 14/09/2026"], "00:00:00")
+        self.assertEqual(carlos["Unnamed: 2"], "Ausente")
+        self.assertIn(carlos["Encontro 2 — 15/09/2026"], ("4:00:00", "04:00:00"))
+        self.assertEqual(carlos["Unnamed: 4"], "Presente")
 
         # 2. Valida Aba 'Interações por encontro': Linhas ordenadas por data cronológica
         df_int_enc = pd.read_excel(saida_excel, sheet_name="Interações por encontro")
