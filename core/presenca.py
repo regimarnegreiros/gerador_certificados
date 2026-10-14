@@ -1904,7 +1904,6 @@ def formatar_aba_presencas(
         return
 
     # 1. Mescla os cabeçalhos dos encontros com ID e data
-    planilha.row_dimensions[1].height = 28
     for idx in range(1, num_encontros + 1):
         col_inicio = 2 * idx
         col_fim = 2 * idx + 1
@@ -1934,7 +1933,6 @@ def formatar_aba_presencas(
 
     # 3. Formatação das linhas de dados (zebra, alinhamento e destaque de 'Ausente')
     for num_linha in range(2, planilha.max_row + 1):
-        planilha.row_dimensions[num_linha].height = 22
         cor_linha = estilos["linha_par"] if num_linha % 2 == 0 else estilos["linha_impar"]
 
         for col_idx in range(1, planilha.max_column + 1):
