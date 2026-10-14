@@ -1458,6 +1458,46 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(mapa_c["Convidados a participar"], 2)
         self.assertEqual(mapa_c["Custo por convidado"], 500.0)
 
+    def test_formatar_aba_presencas_mesclagem_titulos(self):
+        """Testa mesclagem de títulos 'Encontro n' e 'Comparecimento n' com ID e data na aba Presenças."""
+        import openpyxl
+        from core.presenca import formatar_aba_presencas, criar_estilos
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Presenças"
+        ws.append(["Nome", "Encontro 1", "Comparecimento 1", "Encontro 2", "Comparecimento 2"])
+        ws.append(["Alice Silva", "04:00:00", "Presente", "04:00:00", "Presente"])
+        ws.append(["Carlos Pereira", "00:00:00", "Ausente", "04:00:00", "Presente"])
+
+        estilos = criar_estilos()
+        datas = ["14/09/2026", "15/09/2026"]
+        formatar_aba_presencas(ws, wb, estilos, datas_encontros=datas)
+
+        # Valida faixas mescladas
+        merged = {str(r) for r in ws.merged_cells.ranges}
+        self.assertIn("B1:C1", merged)
+        self.assertIn("D1:E1", merged)
+
+        # Valida novos títulos unificados com ID e data
+        self.assertEqual(ws["B1"].value, "Encontro 1 — 14/09/2026")
+        self.assertIsNone(ws["C1"].value)
+        self.assertEqual(ws["D1"].value, "Encontro 2 — 15/09/2026")
+        self.assertIsNone(ws["E1"].value)
+
+        # Valida alinhamento e formatação de 'Ausente'
+        self.assertEqual(ws["B2"].alignment.horizontal, "center")
+        self.assertEqual(ws["C2"].alignment.horizontal, "center")
+        self.assertTrue(ws["B3"].font.bold)
+        self.assertTrue(ws["C3"].font.bold)
+        self.assertFalse(ws["B2"].font.bold)
+
+        # Valida largura das colunas calculada com base no título mesclado
+        self.assertEqual(ws.column_dimensions["B"].width + ws.column_dimensions["C"].width, 26)
+        self.assertEqual(ws.column_dimensions["B"].width, 13)
+        self.assertEqual(ws.column_dimensions["C"].width, 13)
+        self.assertEqual(ws.column_dimensions["A"].width, 17)
+
 
 if __name__ == "__main__":
     unittest.main()
