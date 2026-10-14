@@ -1492,10 +1492,11 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertTrue(ws["C3"].font.bold)
         self.assertFalse(ws["B2"].font.bold)
 
-        # Valida largura das colunas
-        self.assertGreaterEqual(ws.column_dimensions["A"].width, 30)
-        self.assertEqual(ws.column_dimensions["B"].width, 17)
-        self.assertEqual(ws.column_dimensions["C"].width, 17)
+        # Valida largura das colunas calculada com base no título mesclado
+        self.assertEqual(ws.column_dimensions["B"].width + ws.column_dimensions["C"].width, 26)
+        self.assertEqual(ws.column_dimensions["B"].width, 13)
+        self.assertEqual(ws.column_dimensions["C"].width, 13)
+        self.assertEqual(ws.column_dimensions["A"].width, 17)
 
 
 if __name__ == "__main__":

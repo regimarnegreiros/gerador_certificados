@@ -1956,12 +1956,42 @@ def formatar_aba_presencas(
                     cel_comp.font = Font(name="Calibri", size=11, bold=False, color="000000")
                     cel_dur.font = Font(name="Calibri", size=11, bold=False, color="000000")
 
-    # 4. Largura das colunas
+    # 4. Largura das colunas ajustada proporcionalmente ao tamanho do título mesclado
     maior_nome = max((len(str(c.value)) for c in planilha["A"] if c.value is not None), default=0)
-    planilha.column_dimensions["A"].width = max(maior_nome + 4, 30)
-    for col_idx in range(2, planilha.max_column + 1):
-        letra = get_column_letter(col_idx)
-        planilha.column_dimensions[letra].width = 17
+    planilha.column_dimensions["A"].width = min(max(maior_nome + 3, 12), 50)
+
+    for idx in range(1, num_encontros + 1):
+        col_dur = 2 * idx
+        col_comp = 2 * idx + 1
+        if col_comp > planilha.max_column:
+            break
+
+        titulo = str(planilha.cell(row=1, column=col_dur).value or "")
+        tam_titulo = len(titulo)
+
+        maior_dur = max(
+            (len(str(planilha.cell(row=r, column=col_dur).value or "")) for r in range(2, planilha.max_row + 1)),
+            default=8,
+        )
+        maior_comp = max(
+            (len(str(planilha.cell(row=r, column=col_comp).value or "")) for r in range(2, planilha.max_row + 1)),
+            default=8,
+        )
+
+        min_w_dur = max(maior_dur + 3, 10)
+        min_w_comp = max(maior_comp + 3, 11)
+
+        w_titulo_total = tam_titulo + 3
+        w_total = max(w_titulo_total, min_w_dur + min_w_comp)
+
+        w_dur = max(min_w_dur, math.ceil(w_total / 2))
+        w_comp = max(min_w_comp, w_total - w_dur)
+
+        letra_dur = get_column_letter(col_dur)
+        letra_comp = get_column_letter(col_comp)
+
+        planilha.column_dimensions[letra_dur].width = w_dur
+        planilha.column_dimensions[letra_comp].width = w_comp
 
 
 def ajustar_largura_colunas(planilha):
