@@ -266,12 +266,18 @@ def ler_resumo_reuniao(caminho: Path) -> Dict[str, Any]:
     - 'datetime': objeto datetime da reunião (se disponível)
     - 'duracao_str': duração da reunião (ex: '4h 2m 32s')
     - 'duracao_segundos': duração da reunião em segundos
+    - 'tempo_medio_str': tempo médio de participação (ex: '3h 15m 10s')
+    - 'tempo_medio_segundos': tempo médio de participação em segundos
     """
     resumo = {
         "data": "",
         "datetime": None,
         "duracao_str": "",
         "duracao_segundos": 0,
+        "tempo_medio_str": "",
+        "tempo_medio_segundos": 0,
+        "tempo_medio_participacao_str": "",
+        "tempo_medio_participacao_segundos": 0,
     }
     encodings = ["utf-16", "utf-8-sig", "utf-8", "latin1"]
     linhas_resumo = []
@@ -327,6 +333,14 @@ def ler_resumo_reuniao(caminho: Path) -> Dict[str, Any]:
                     resumo["data"] = dt.strftime("%d/%m/%Y")
                 else:
                     resumo["data"] = extrair_data_resumo(valor)
+        elif "TEMPO MEDIO DE PARTICIPACAO" in chave_norm or "TEMPO MEDIO" in chave_norm or "AVERAGE ATTENDANCE TIME" in chave_norm or "AVERAGE PARTICIPATION TIME" in chave_norm:
+            if not resumo["tempo_medio_str"]:
+                segs = tempo_em_segundos(valor)
+                resumo["tempo_medio_segundos"] = segs
+                val_str = valor if valor else (segundos_em_tempo(segs) if segs > 0 else "")
+                resumo["tempo_medio_str"] = val_str
+                resumo["tempo_medio_participacao_segundos"] = segs
+                resumo["tempo_medio_participacao_str"] = val_str
         elif "DURACAO DA REUNIAO" in chave_norm or "DURACAO" in chave_norm or "MEETING DURATION" in chave_norm:
             if not resumo["duracao_str"]:
                 segs = tempo_em_segundos(valor)
@@ -1143,7 +1157,8 @@ def criar_aba_interacoes_encontro(
     Colunas:
     - ID
     - Data
-    - Carga horária
+    - CH Realizada
+    - Tempo Médio
     - Presentes
     - Ligou a câmera
     - Ligou o microfone
@@ -1169,6 +1184,21 @@ def criar_aba_interacoes_encontro(
             dur_seg = max([tempo_em_segundos(t) for t in df_res["Duração da Reunião"]], default=0)
 
         dur_str = segundos_em_formato_hh_mm_ss(dur_seg)
+
+        # Tempo médio de participação em formato digital 00:00:00
+        tempo_medio_seg = resumo.get("tempo_medio_segundos", 0)
+        if tempo_medio_seg == 0:
+            tempo_medio_raw = resumo.get("tempo_medio_str", "")
+            if tempo_medio_raw:
+                tempo_medio_seg = tempo_em_segundos(tempo_medio_raw)
+        if tempo_medio_seg == 0 and "Duração da Reunião" in df_res.columns:
+            tempos_presentes = [
+                tempo_em_segundos(t) for t in df_res["Duração da Reunião"]
+                if tempo_em_segundos(t) > 0
+            ]
+            tempo_medio_seg = int(round(sum(tempos_presentes) / len(tempos_presentes))) if tempos_presentes else 0
+
+        tempo_medio_str = segundos_em_formato_hh_mm_ss(tempo_medio_seg)
 
         # Presentes em formato 'X de Y' para eliminar aviso de heurística de data do Excel
         presentes_count = int((df_res["Compareceu"] == "Presente").sum()) if "Compareceu" in df_res.columns else 0
@@ -1196,7 +1226,8 @@ def criar_aba_interacoes_encontro(
         linhas.append({
             "ID": idx,
             "Data": data_enc,
-            "Carga horária": dur_str,
+            "CH Realizada": dur_str,
+            "Tempo Médio": tempo_medio_str,
             "Presentes": txt_presentes,
             "Ligou a câmera": txt_camera,
             "Ligou o microfone": txt_microfone,
@@ -1235,6 +1266,7 @@ def criar_aba_indicadores(
     - Participantes totais
     - Participantes certificados
     - Carga horária realizada
+    - Tempo médio de participação
     - Taxa de certificação
     - Participações com Câmera
     - Participações com Microfone
@@ -1264,13 +1296,25 @@ def criar_aba_indicadores(
 
     # 4. Carga horária realizada (soma duração de reunião de todos os encontros no formato 00:00:00)
     total_segundos_encontros = 0
+    total_segundos_tempo_medio = 0
     for idx, (resumo, df_res) in enumerate(zip(lista_resumos, lista_resultados_encontros)):
         seg = resumo.get("duracao_segundos", 0)
         if seg == 0 and "Duração da Reunião" in df_res.columns:
             seg = max([tempo_em_segundos(t) for t in df_res["Duração da Reunião"]], default=0)
         total_segundos_encontros += seg
 
+        seg_tm = resumo.get("tempo_medio_segundos", 0)
+        if seg_tm == 0:
+            seg_tm_raw = resumo.get("tempo_medio_str", "")
+            if seg_tm_raw:
+                seg_tm = tempo_em_segundos(seg_tm_raw)
+        if seg_tm == 0 and "Duração da Reunião" in df_res.columns:
+            tempos = [tempo_em_segundos(t) for t in df_res["Duração da Reunião"] if tempo_em_segundos(t) > 0]
+            seg_tm = int(round(sum(tempos) / len(tempos))) if tempos else 0
+        total_segundos_tempo_medio += seg_tm
+
     carga_realizada_str = segundos_em_formato_hh_mm_ss(total_segundos_encontros)
+    tempo_medio_realizado_str = segundos_em_formato_hh_mm_ss(total_segundos_tempo_medio)
 
     # 5. Taxa de certificação (certificados / convidados)
     taxa_certificacao = (
@@ -1316,6 +1360,7 @@ def criar_aba_indicadores(
         {"Indicador": "Participantes totais", "Resultado": participantes_totais},
         {"Indicador": "Participantes certificados", "Resultado": participantes_certificados},
         {"Indicador": "Carga horária realizada", "Resultado": carga_realizada_str},
+        {"Indicador": "Tempo médio de participação", "Resultado": tempo_medio_realizado_str},
         {"Indicador": "Taxa de certificação", "Resultado": taxa_certificacao},
         {"Indicador": "Participações com Câmera", "Resultado": participacoes_camera},
         {"Indicador": "Participações com Microfone", "Resultado": participacoes_microfone},
@@ -1346,11 +1391,14 @@ def criar_aba_custos(
     - Quantidade de encontros
     - Carga horária
     - Carga horária realizada
+    - Tempo médio de participação realizado
     - Custo por convidado
     - Custo por participante
     - Custo por certificado
     - Custo por encontro
-    - Custo por hora
+    - Custo por hora prevista
+    - Custo por hora realizada
+    - Custo por hora de participação média
     """
     convidados_val = int(total_convidados)
 
@@ -1401,12 +1449,25 @@ def criar_aba_custos(
 
     # Carga horária realizada (soma duração real dos encontros no formato HH:MM:SS)
     total_segundos_encontros = 0
+    total_segundos_tempo_medio = 0
     for resumo, df_res in zip(lista_resumos, lista_resultados_encontros):
         seg = resumo.get("duracao_segundos", 0)
         if seg == 0 and "Duração da Reunião" in df_res.columns:
             seg = max([tempo_em_segundos(t) for t in df_res["Duração da Reunião"]], default=0)
         total_segundos_encontros += seg
+
+        seg_tm = resumo.get("tempo_medio_segundos", 0)
+        if seg_tm == 0:
+            seg_tm_raw = resumo.get("tempo_medio_str", "")
+            if seg_tm_raw:
+                seg_tm = tempo_em_segundos(seg_tm_raw)
+        if seg_tm == 0 and "Duração da Reunião" in df_res.columns:
+            tempos = [tempo_em_segundos(t) for t in df_res["Duração da Reunião"] if tempo_em_segundos(t) > 0]
+            seg_tm = int(round(sum(tempos) / len(tempos))) if tempos else 0
+        total_segundos_tempo_medio += seg_tm
+
     carga_realizada_str = segundos_em_formato_hh_mm_ss(total_segundos_encontros)
+    tempo_medio_realizado_str = segundos_em_formato_hh_mm_ss(total_segundos_tempo_medio)
 
     # Métricas derivadas de custo
     custo_por_convidado = (custo_total / convidados_val) if convidados_val > 0 else 0.0
@@ -1414,14 +1475,28 @@ def criar_aba_custos(
     custo_por_certificado = (custo_total / participantes_certificados) if participantes_certificados > 0 else 0.0
     custo_por_encontro = (custo_total / qtd_encontros) if qtd_encontros > 0 else 0.0
 
-    # Custo por hora: Custo total / Carga Horária Realizada (com fallback para carga prevista)
+    # Custo por hora prevista: Custo total / Carga Horária Prevista
+    horas_previstas = float(carga_horaria_horas or 0.0)
+    if horas_previstas > 0:
+        custo_por_hora_prevista = custo_total / horas_previstas
+    else:
+        custo_por_hora_prevista = 0.0
+
+    # Custo por hora realizada: Custo total / Carga Horária Realizada (com fallback para prevista)
     horas_realizadas = total_segundos_encontros / 3600.0
     if horas_realizadas > 0:
-        custo_por_hora = custo_total / horas_realizadas
-    elif float(carga_horaria_horas or 0.0) > 0:
-        custo_por_hora = custo_total / float(carga_horaria_horas)
+        custo_por_hora_realizada = custo_total / horas_realizadas
+    elif horas_previstas > 0:
+        custo_por_hora_realizada = custo_por_hora_prevista
     else:
-        custo_por_hora = 0.0
+        custo_por_hora_realizada = 0.0
+
+    # Custo por hora de participação média: Custo total / Tempo Médio Acumulado
+    horas_tempo_medio = total_segundos_tempo_medio / 3600.0
+    if horas_tempo_medio > 0:
+        custo_por_hora_participacao = custo_total / horas_tempo_medio
+    else:
+        custo_por_hora_participacao = 0.0
 
     linhas = [
         {"Item": "Convidados a participar", "Valor": convidados_val},
@@ -1431,11 +1506,14 @@ def criar_aba_custos(
         {"Item": "Quantidade de encontros", "Valor": qtd_encontros},
         {"Item": "Carga horária", "Valor": carga_horaria_str},
         {"Item": "Carga horária realizada", "Valor": carga_realizada_str},
+        {"Item": "Tempo médio de participação", "Valor": tempo_medio_realizado_str},
         {"Item": "Custo por convidado", "Valor": custo_por_convidado},
         {"Item": "Custo por participante", "Valor": custo_por_participante},
         {"Item": "Custo por certificado", "Valor": custo_por_certificado},
         {"Item": "Custo por encontro", "Valor": custo_por_encontro},
-        {"Item": "Custo por hora", "Valor": custo_por_hora},
+        {"Item": "Custo por hora prevista", "Valor": custo_por_hora_prevista},
+        {"Item": "Custo por hora realizada", "Valor": custo_por_hora_realizada},
+        {"Item": "Custo por hora de participação média", "Valor": custo_por_hora_participacao},
     ]
 
     return pd.DataFrame(linhas)
@@ -1653,6 +1731,10 @@ def alinhar_colunas(planilha):
                     "ID",
                     "Data",
                     "Carga horária",
+                    "Carga horária realizada",
+                    "CH Realizada",
+                    "Tempo médio de participação",
+                    "Tempo Médio",
                     "Presentes",
                     "Ligou a câmera",
                     "Ligou o microfone",
@@ -2022,7 +2104,8 @@ def ajustar_largura_colunas(planilha):
 
     if planilha.title in ("Indicadores", "Custos", "Presenças"):
         if planilha.title in ("Indicadores", "Custos"):
-            planilha.column_dimensions["A"].width = 36
+            maior = max((len(str(c.value)) for c in planilha["A"] if c.value is not None), default=30)
+            planilha.column_dimensions["A"].width = max(maior + 4, 38)
             planilha.column_dimensions["B"].width = 24
         return
 

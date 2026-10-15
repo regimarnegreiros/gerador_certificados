@@ -944,12 +944,13 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(segundos_em_formato_hh_mm_ss(total_seg), "08:05:04")
 
     def test_ler_resumo_reuniao_formatos(self):
-        # Caso 1: TSV com Hora de início e Duração da reunião
+        # Caso 1: TSV com Hora de início, Duração da reunião e Tempo médio de participação
         conteudo_tsv = (
             "1. Resumo da Reunião\n"
             "Total de participantes\t10\n"
             "Hora de início\t9/14/26,8:01:54 AM\n"
             "Duração da reunião\t4h 2m 32s\n"
+            "Tempo médio de participação\t2h 30m 15s\n"
             "2. Participantes\n"
             "Nome\tEmail\n"
         )
@@ -959,13 +960,16 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(res_tsv["data"], "14/09/2026")
         self.assertEqual(res_tsv["duracao_str"], "4h 2m 32s")
         self.assertEqual(res_tsv["duracao_segundos"], 14552)
+        self.assertEqual(res_tsv["tempo_medio_str"], "2h 30m 15s")
+        self.assertEqual(res_tsv["tempo_medio_segundos"], 2 * 3600 + 30 * 60 + 15)
 
-        # Caso 2: CSV com aspas e vírgulas
+        # Caso 2: CSV com aspas e vírgulas (em inglês: Average attendance time)
         conteudo_csv = (
             '"1. Resumo da Reunião"\n'
             '"Total de participantes","5"\n'
             '"Hora de início","9/14/26,8:01:54 AM"\n'
             '"Duração da reunião","3h 15m 0s"\n'
+            '"Average attendance time","1h 45m 0s"\n'
             '"2. Participantes"\n'
         )
         arq_csv = self.temp_dir / "resumo_csv.csv"
@@ -974,6 +978,8 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(res_csv["data"], "14/09/2026")
         self.assertEqual(res_csv["duracao_str"], "3h 15m 0s")
         self.assertEqual(res_csv["duracao_segundos"], 3 * 3600 + 15 * 60)
+        self.assertEqual(res_csv["tempo_medio_str"], "1h 45m 0s")
+        self.assertEqual(res_csv["tempo_medio_segundos"], 1 * 3600 + 45 * 60)
 
         # Caso 3: Arquivo sem Seção 1 (Resumo ausente)
         arq_vazio = self.temp_dir / "resumo_vazio.csv"
@@ -982,6 +988,8 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(res_vazio["data"], "")
         self.assertEqual(res_vazio["duracao_str"], "")
         self.assertEqual(res_vazio["duracao_segundos"], 0)
+        self.assertEqual(res_vazio["tempo_medio_str"], "")
+        self.assertEqual(res_vazio["tempo_medio_segundos"], 0)
 
     def test_ordenar_arquivos_presenca_cronologico(self):
         # 1. Arquivos com Seção 1 (Resumo) fora de ordem
@@ -1082,7 +1090,13 @@ class TestGeradorCertificados(unittest.TestCase):
             "maos_qtd": [1, 0],
             "reacoes_qtd": [4, 0],
         })
-        resumo_e1 = {"data": "14/09/2026", "duracao_str": "4h 2m 32s", "duracao_segundos": 14552}
+        resumo_e1 = {
+            "data": "14/09/2026",
+            "duracao_str": "4h 2m 32s",
+            "duracao_segundos": 14552,
+            "tempo_medio_str": "3h 0m 0s",
+            "tempo_medio_segundos": 10800,
+        }
 
         # Encontro 2
         res_e2 = pd.DataFrame({
@@ -1100,7 +1114,13 @@ class TestGeradorCertificados(unittest.TestCase):
             "maos_qtd": [2, 0],
             "reacoes_qtd": [3, 1],
         })
-        resumo_e2 = {"data": "15/09/2026", "duracao_str": "4h 2m 32s", "duracao_segundos": 14552}
+        resumo_e2 = {
+            "data": "15/09/2026",
+            "duracao_str": "4h 2m 32s",
+            "duracao_segundos": 14552,
+            "tempo_medio_str": "3h 0m 0s",
+            "tempo_medio_segundos": 10800,
+        }
 
         lista_int = [int_e1, int_e2]
         lista_res = [res_e1, res_e2]
@@ -1141,13 +1161,14 @@ class TestGeradorCertificados(unittest.TestCase):
         df_aba2 = criar_aba_interacoes_encontro(4, lista_resumos, lista_int, lista_res)
         self.assertEqual(
             list(df_aba2.columns),
-            ["ID", "Data", "Carga horária", "Presentes", "Ligou a câmera", "Ligou o microfone", "Levantou a mão", "Reações"]
+            ["ID", "Data", "CH Realizada", "Tempo Médio", "Presentes", "Ligou a câmera", "Ligou o microfone", "Levantou a mão", "Reações"]
         )
         self.assertEqual(len(df_aba2), 2)
         e1 = df_aba2.iloc[0]
         self.assertEqual(e1["ID"], 1)
         self.assertEqual(e1["Data"], "14/09/2026")
-        self.assertEqual(e1["Carga horária"], "04:02:32")
+        self.assertEqual(e1["CH Realizada"], "04:02:32")
+        self.assertEqual(e1["Tempo Médio"], "03:00:00")
         self.assertEqual(e1["Presentes"], "2 de 4")
         self.assertEqual(e1["Ligou a câmera"], "1 de 2")
         self.assertEqual(e1["Ligou o microfone"], "1 de 2")
@@ -1162,6 +1183,7 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(mapa_ind["Participantes totais"], 3)  # Alice, Bruno, Carlos
         self.assertEqual(mapa_ind["Participantes certificados"], 1)  # Alice
         self.assertEqual(mapa_ind["Carga horária realizada"], "08:05:04")
+        self.assertEqual(mapa_ind["Tempo médio de participação"], "06:00:00")
         self.assertEqual(mapa_ind["Taxa de certificação"], 1 / 4)
         self.assertEqual(mapa_ind["Participações com Câmera"], 2 / 3)  # Alice e Carlos
         self.assertEqual(mapa_ind["Participações com Microfone"], 1 / 3)  # Alice
@@ -1236,8 +1258,8 @@ class TestGeradorCertificados(unittest.TestCase):
             "Apto por CH": ["APTO", "APTO", "NÃO APTO", "APTO", "NÃO APTO"],
         })
         lista_resumos = [
-            {"duracao_segundos": 7200},  # 2 horas
-            {"duracao_segundos": 7200},  # 2 horas -> total 4 horas (14400s)
+            {"duracao_segundos": 7200, "tempo_medio_segundos": 3600},  # 2 horas duracao, 1 hora tempo medio
+            {"duracao_segundos": 7200, "tempo_medio_segundos": 3600},  # 2 horas -> total 4h duracao, 2h tempo medio
         ]
         lista_resultados = [
             pd.DataFrame({"Nome": ["Alice", "Bruno"]}),
@@ -1258,7 +1280,7 @@ class TestGeradorCertificados(unittest.TestCase):
             config=config,
         )
 
-        self.assertEqual(len(df_custos), 12)
+        self.assertEqual(len(df_custos), 15)
         mapa = dict(zip(df_custos["Item"], df_custos["Valor"]))
         self.assertEqual(mapa["Convidados a participar"], 5)
         self.assertEqual(mapa["Participantes totais"], 4)  # Alice, Bruno, Diana, Eduardo
@@ -1267,11 +1289,14 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(mapa["Quantidade de encontros"], 2)
         self.assertEqual(mapa["Carga horária"], "10:00:00")
         self.assertEqual(mapa["Carga horária realizada"], "04:00:00")
+        self.assertEqual(mapa["Tempo médio de participação realizado"], "02:00:00")
         self.assertEqual(mapa["Custo por convidado"], 800.0)
         self.assertEqual(mapa["Custo por participante"], 1000.0)
         self.assertAlmostEqual(mapa["Custo por certificado"], 4000.0 / 3)
         self.assertEqual(mapa["Custo por encontro"], 2000.0)
-        self.assertEqual(mapa["Custo por hora"], 1000.0)  # 4000 / 4h realizadas
+        self.assertEqual(mapa["Custo por hora prevista"], 400.0)  # 4000 / 10h previstas
+        self.assertEqual(mapa["Custo por hora realizada"], 1000.0)  # 4000 / 4h realizadas
+        self.assertEqual(mapa["Custo por hora de participação média"], 2000.0)  # 4000 / 2h tempo medio
 
         # Valida exportação e openpyxl
         saida = self.temp_dir / "teste_aba_custos.xlsx"
@@ -1284,7 +1309,7 @@ class TestGeradorCertificados(unittest.TestCase):
         wb = openpyxl.load_workbook(saida)
         self.assertIn("Custos", wb.sheetnames)
         ws = wb["Custos"]
-        self.assertEqual(ws.column_dimensions["A"].width, 36)
+        self.assertGreaterEqual(ws.column_dimensions["A"].width, 36)
         self.assertEqual(ws.column_dimensions["B"].width, 24)
 
         # Checa células de custo com formatação de moeda R$ #,##0.00

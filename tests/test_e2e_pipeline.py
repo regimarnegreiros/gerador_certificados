@@ -76,12 +76,13 @@ class TestE2EPipeline(unittest.TestCase):
 
         # 5. Listas de Presença (.csv diários - formato Teams)
         # Teams tem seção "1. Resumo", depois "2. Participantes" com interações, depois "3. Atividades em Reunião"
-        def gerar_presenca_teams(participantes, data_inicio="9/14/26,8:01:54 AM", duracao="4h 0m 0s"):
+        def gerar_presenca_teams(participantes, data_inicio="9/14/26,8:01:54 AM", duracao="4h 0m 0s", tempo_medio="3h 0m 0s"):
             linhas = [
                 "1. Resumo da Reunião",
                 f"Total de participantes\t{len(participantes)}",
                 f"Hora de início\t{data_inicio}",
                 f"Duração da reunião\t{duracao}",
+                f"Tempo médio de participação\t{tempo_medio}",
                 "2. Participantes",
                 "Nome\tEmail\tDuração da Reunião\tPapel\tCompromisso: Câmera Ligada\tCompromisso: Desativar Mudo\tCompromisso: Levantar as mãos\tEnvolvimento: Reação - Aplauso\tEnvolvimento: Reação - Curtir",
             ]
@@ -235,13 +236,14 @@ class TestE2EPipeline(unittest.TestCase):
         df_int_enc_excel = pd.read_excel(saida_excel, sheet_name="Interações por encontro")
         self.assertEqual(
             list(df_int_enc_excel.columns),
-            ["ID", "Data", "Carga horária", "Presentes", "Ligou a câmera", "Ligou o microfone", "Levantou a mão", "Reações"]
+            ["ID", "Data", "CH Realizada", "Tempo Médio", "Presentes", "Ligou a câmera", "Ligou o microfone", "Levantou a mão", "Reações"]
         )
         self.assertEqual(len(df_int_enc_excel), 2)
         enc1 = df_int_enc_excel.iloc[0]
         self.assertEqual(enc1["ID"], 1)
         self.assertEqual(enc1["Data"], "14/09/2026")
-        self.assertEqual(enc1["Carga horária"], "04:00:00")
+        self.assertEqual(enc1["CH Realizada"], "04:00:00")
+        self.assertEqual(enc1["Tempo Médio"], "03:00:00")
         self.assertEqual(enc1["Presentes"], "2 de 3")
         self.assertEqual(enc1["Ligou a câmera"], "1 de 2")
         self.assertEqual(enc1["Ligou o microfone"], "1 de 2")
@@ -251,6 +253,8 @@ class TestE2EPipeline(unittest.TestCase):
         enc2 = df_int_enc_excel.iloc[1]
         self.assertEqual(enc2["ID"], 2)
         self.assertEqual(enc2["Data"], "15/09/2026")
+        self.assertEqual(enc2["CH Realizada"], "04:00:00")
+        self.assertEqual(enc2["Tempo Médio"], "03:00:00")
         self.assertEqual(enc2["Presentes"], "2 de 3")
         self.assertEqual(enc2["Ligou a câmera"], "2 de 2")
         self.assertEqual(enc2["Ligou o microfone"], "1 de 2")
@@ -265,6 +269,7 @@ class TestE2EPipeline(unittest.TestCase):
         self.assertEqual(mapa_ind["Participantes totais"], 3)
         self.assertEqual(mapa_ind["Participantes certificados"], 1)
         self.assertEqual(mapa_ind["Carga horária realizada"], "08:00:00")
+        self.assertEqual(mapa_ind["Tempo médio de participação"], "06:00:00")
         self.assertAlmostEqual(mapa_ind["Taxa de certificação"], 1 / 3)
         self.assertAlmostEqual(mapa_ind["Participações com Câmera"], 2 / 3)
         self.assertAlmostEqual(mapa_ind["Participações com Microfone"], 1 / 3)
@@ -274,7 +279,7 @@ class TestE2EPipeline(unittest.TestCase):
         # Valida Aba 4: 'Custos'
         df_custos_excel = pd.read_excel(saida_excel, sheet_name="Custos")
         self.assertEqual(list(df_custos_excel.columns), ["Item", "Valor"])
-        self.assertEqual(len(df_custos_excel), 12)
+        self.assertEqual(len(df_custos_excel), 15)
         mapa_custos = dict(zip(df_custos_excel["Item"], df_custos_excel["Valor"]))
         self.assertEqual(mapa_custos["Convidados a participar"], 3)
         self.assertEqual(mapa_custos["Participantes totais"], 3)
@@ -283,11 +288,14 @@ class TestE2EPipeline(unittest.TestCase):
         self.assertEqual(mapa_custos["Quantidade de encontros"], 2)
         self.assertEqual(mapa_custos["Carga horária"], "10:00:00")
         self.assertEqual(mapa_custos["Carga horária realizada"], "08:00:00")
+        self.assertEqual(mapa_custos["Tempo médio de participação realizado"], "06:00:00")
         self.assertEqual(mapa_custos["Custo por convidado"], 1000.0)
         self.assertEqual(mapa_custos["Custo por participante"], 1000.0)
         self.assertEqual(mapa_custos["Custo por certificado"], 3000.0)
         self.assertEqual(mapa_custos["Custo por encontro"], 1500.0)
-        self.assertEqual(mapa_custos["Custo por hora"], 375.0)
+        self.assertEqual(mapa_custos["Custo por hora prevista"], 300.0)
+        self.assertEqual(mapa_custos["Custo por hora realizada"], 375.0)
+        self.assertEqual(mapa_custos["Custo por hora de participação média"], 500.0)
 
         ws_custos = wb["Custos"]
         # Verifica se células de custos possuem formatação de moeda
