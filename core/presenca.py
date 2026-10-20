@@ -1506,7 +1506,7 @@ def criar_aba_custos(
         {"Item": "Quantidade de encontros", "Valor": qtd_encontros},
         {"Item": "Carga horária", "Valor": carga_horaria_str},
         {"Item": "Carga horária realizada", "Valor": carga_realizada_str},
-        {"Item": "Tempo médio de participação", "Valor": tempo_medio_realizado_str},
+        {"Item": "Tempo médio de participação realizado", "Valor": tempo_medio_realizado_str},
         {"Item": "Custo por convidado", "Valor": custo_por_convidado},
         {"Item": "Custo por participante", "Valor": custo_por_participante},
         {"Item": "Custo por certificado", "Valor": custo_por_certificado},
@@ -1866,8 +1866,8 @@ def formatar_aba_informacoes(planilha, estilos):
         cel_obs.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
 
-def formatar_aba_indicadores(planilha, estilos):
-    """Aplica formatação específica e refinada para a aba 'Indicadores'."""
+def formatar_aba_indicadores(planilha, estilos, workbook=None):
+    """Aplica formatação específica e refinada para a aba 'Indicadores', injetando fórmulas dinâmicas."""
     borda_celula = Border(
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
@@ -1875,6 +1875,79 @@ def formatar_aba_indicadores(planilha, estilos):
         bottom=Side(style="thin", color="D9D9D9"),
     )
     planilha.row_dimensions[1].height = 28
+
+    # Mapeia linhas pelos nomes dos indicadores
+    mapa_linhas = {}
+    for num_linha in range(2, planilha.max_row + 1):
+        ind_nome = str(planilha.cell(row=num_linha, column=1).value or "").strip()
+        mapa_linhas[ind_nome] = num_linha
+
+    r_conv = mapa_linhas.get("Convidados a participar", 2)
+    r_tot = mapa_linhas.get("Participantes totais", 3)
+    r_cert = mapa_linhas.get("Participantes certificados", 4)
+    r_taxa = mapa_linhas.get("Taxa de certificação", 7)
+    r_cam = mapa_linhas.get("Participações com Câmera", 8)
+    r_mic = mapa_linhas.get("Participações com Microfone", 9)
+    r_reac = mapa_linhas.get("Total de reações", 10)
+    r_maos = mapa_linhas.get("Total de mãos levantadas", 11)
+
+    # Injeção de fórmulas dinâmicas caso workbook fornecido
+    if workbook is not None:
+        # 1. Certificação: Convidados a participar, Participantes totais e Participantes certificados
+        if "Certificação" in workbook.sheetnames:
+            ws_cert = workbook["Certificação"]
+
+            col_nome = "A"
+            col_pres = None
+            col_apto = None
+            for col_idx in range(1, ws_cert.max_column + 1):
+                val_cab = str(ws_cert.cell(row=1, column=col_idx).value or "").strip()
+                if val_cab.lower() in ("nome", "participante", "servidor"):
+                    col_nome = get_column_letter(col_idx)
+                elif val_cab == "Presenças":
+                    col_pres = get_column_letter(col_idx)
+                elif val_cab in ("Apto por CH", "Apto ao Certificado"):
+                    col_apto = get_column_letter(col_idx)
+
+            if "Convidados a participar" in mapa_linhas:
+                planilha.cell(row=r_conv, column=2).value = f"=MAX(0, COUNTA('Certificação'!{col_nome}:{col_nome}) - 1)"
+            if col_pres and "Participantes totais" in mapa_linhas:
+                planilha.cell(row=r_tot, column=2).value = f'=COUNTIF(\'Certificação\'!{col_pres}:{col_pres}, ">=1")'
+            if col_apto and "Participantes certificados" in mapa_linhas:
+                planilha.cell(row=r_cert, column=2).value = f'=COUNTIF(\'Certificação\'!{col_apto}:{col_apto}, "APTO")'
+
+        # 2. Taxa de certificação: Certificados (B4) / Convidados (B2)
+        if "Taxa de certificação" in mapa_linhas and "Convidados a participar" in mapa_linhas and "Participantes certificados" in mapa_linhas:
+            planilha.cell(row=r_taxa, column=2).value = f"=IF(B{r_conv}>0, B{r_cert}/B{r_conv}, 0)"
+
+        # 3. Interações por participante: Câmera, Microfone, Reações, Mãos
+        if "Interações por participante" in workbook.sheetnames:
+            ws_part = workbook["Interações por participante"]
+
+            col_cam = None
+            col_mic = None
+            col_reac = None
+            col_maos = None
+
+            for col_idx in range(1, ws_part.max_column + 1):
+                val_cab = str(ws_part.cell(row=1, column=col_idx).value or "").strip()
+                if val_cab in ("Câmera", "Presenças com câmera"):
+                    col_cam = get_column_letter(col_idx)
+                elif val_cab in ("Microfone", "Presenças com microfone"):
+                    col_mic = get_column_letter(col_idx)
+                elif val_cab in ("Total Reações", "Quantidade de reações"):
+                    col_reac = get_column_letter(col_idx)
+                elif val_cab in ("Mãos levantadas", "Mãos"):
+                    col_maos = get_column_letter(col_idx)
+
+            if col_cam and "Participações com Câmera" in mapa_linhas and "Participantes totais" in mapa_linhas:
+                planilha.cell(row=r_cam, column=2).value = f'=IF(B{r_tot}>0, COUNTIF(\'Interações por participante\'!{col_cam}:{col_cam}, ">=1")/B{r_tot}, 0)'
+            if col_mic and "Participações com Microfone" in mapa_linhas and "Participantes totais" in mapa_linhas:
+                planilha.cell(row=r_mic, column=2).value = f'=IF(B{r_tot}>0, COUNTIF(\'Interações por participante\'!{col_mic}:{col_mic}, ">=1")/B{r_tot}, 0)'
+            if col_reac and "Total de reações" in mapa_linhas:
+                planilha.cell(row=r_reac, column=2).value = f"=SUM('Interações por participante'!{col_reac}:{col_reac})"
+            if col_maos and "Total de mãos levantadas" in mapa_linhas:
+                planilha.cell(row=r_maos, column=2).value = f"=SUM('Interações por participante'!{col_maos}:{col_maos})" 
 
     for num_linha in range(2, planilha.max_row + 1):
         planilha.row_dimensions[num_linha].height = 24
@@ -1894,18 +1967,16 @@ def formatar_aba_indicadores(planilha, estilos):
 
         # Formata porcentagens como número nativo do Excel com formatação percentual ("0%" ou "0.0%")
         if any(termo in ind_nome for termo in ["Taxa", "Participações", "Porcentagem", "%"]):
-            try:
-                val_limpo = str(cel_res.value or "").replace("%", "").strip().replace(",", ".")
-                num_pct = float(val_limpo)
-                if num_pct > 1.0:
-                    num_pct = num_pct / 100.0
-                cel_res.value = num_pct
-                if (num_pct * 100).is_integer():
-                    cel_res.number_format = "0%"
-                else:
-                    cel_res.number_format = "0.0%"
-            except (ValueError, TypeError):
-                pass
+            if not str(cel_res.value or "").startswith("="):
+                try:
+                    val_limpo = str(cel_res.value or "").replace("%", "").strip().replace(",", ".")
+                    num_pct = float(val_limpo)
+                    if num_pct > 1.0:
+                        num_pct = num_pct / 100.0
+                    cel_res.value = num_pct
+                except (ValueError, TypeError):
+                    pass
+            cel_res.number_format = "0.0%"
             cel_res.alignment = Alignment(horizontal="center", vertical="center")
             cel_res.font = Font(name="Calibri", size=11, bold=True, color="000000")
         else:
@@ -1913,8 +1984,8 @@ def formatar_aba_indicadores(planilha, estilos):
             cel_res.font = Font(name="Calibri", size=11, bold=False, color="000000")
 
 
-def formatar_aba_custos(planilha, estilos):
-    """Aplica formatação específica e refinada para a aba 'Custos'."""
+def formatar_aba_custos(planilha, estilos, workbook=None):
+    """Aplica formatação específica e refinada para a aba 'Custos', injetando fórmulas dinâmicas."""
     borda_celula = Border(
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
@@ -1922,6 +1993,73 @@ def formatar_aba_custos(planilha, estilos):
         bottom=Side(style="thin", color="D9D9D9"),
     )
     planilha.row_dimensions[1].height = 28
+
+    # Mapeia linhas pelos nomes dos itens
+    mapa_linhas = {}
+    for num_linha in range(2, planilha.max_row + 1):
+        item_nome = str(planilha.cell(row=num_linha, column=1).value or "").strip()
+        mapa_linhas[item_nome] = num_linha
+
+    r_conv = mapa_linhas.get("Convidados a participar", 2)
+    r_tot = mapa_linhas.get("Participantes totais", 3)
+    r_cert = mapa_linhas.get("Participantes certificados", 4)
+    r_custo = mapa_linhas.get("Custo total", 5)
+    r_encontros = mapa_linhas.get("Quantidade de encontros", 6)
+    r_ch_prev = mapa_linhas.get("Carga horária", 7)
+    r_ch_real = mapa_linhas.get("Carga horária realizada", 8)
+    r_tm_real = mapa_linhas.get("Tempo médio de participação realizado", mapa_linhas.get("Tempo médio de participação", 9))
+
+    # Se workbook fornecido e contém a aba Indicadores, vincula convidados, totais e certificados à aba Indicadores
+    if workbook is not None and "Indicadores" in workbook.sheetnames:
+        ws_ind = workbook["Indicadores"]
+        mapa_ind_linhas = {}
+        for r in range(2, ws_ind.max_row + 1):
+            ind_nome = str(ws_ind.cell(row=r, column=1).value or "").strip()
+            mapa_ind_linhas[ind_nome] = r
+
+        r_ind_conv = mapa_ind_linhas.get("Convidados a participar", 2)
+        r_ind_tot = mapa_ind_linhas.get("Participantes totais", 3)
+        r_ind_cert = mapa_ind_linhas.get("Participantes certificados", 4)
+
+        if "Convidados a participar" in mapa_linhas:
+            planilha.cell(row=r_conv, column=2).value = f"=Indicadores!B{r_ind_conv}"
+        if "Participantes totais" in mapa_linhas:
+            planilha.cell(row=r_tot, column=2).value = f"=Indicadores!B{r_ind_tot}"
+        if "Participantes certificados" in mapa_linhas:
+            planilha.cell(row=r_cert, column=2).value = f"=Indicadores!B{r_ind_cert}"
+    elif workbook is not None and "Certificação" in workbook.sheetnames:
+        ws_cert = workbook["Certificação"]
+        col_nome = "A"
+        for col_idx in range(1, ws_cert.max_column + 1):
+            val_cab = str(ws_cert.cell(row=1, column=col_idx).value or "").strip()
+            if val_cab.lower() in ("nome", "participante", "servidor"):
+                col_nome = get_column_letter(col_idx)
+                break
+        if "Convidados a participar" in mapa_linhas:
+            planilha.cell(row=r_conv, column=2).value = f"=MAX(0, COUNTA('Certificação'!{col_nome}:{col_nome}) - 1)"
+
+    # Se workbook fornecido e contém a aba Interações por encontro, vincula Quantidade de encontros
+    if workbook is not None and "Interações por encontro" in workbook.sheetnames:
+        ws_enc = workbook["Interações por encontro"]
+        col_id = "A"
+        for col_idx in range(1, ws_enc.max_column + 1):
+            val_cab = str(ws_enc.cell(row=1, column=col_idx).value or "").strip()
+            if val_cab.lower() in ("id", "encontro", "data"):
+                col_id = get_column_letter(col_idx)
+                break
+        if "Quantidade de encontros" in mapa_linhas:
+            planilha.cell(row=r_encontros, column=2).value = f"=MAX(0, COUNTA('Interações por encontro'!{col_id}:{col_id}) - 1)"
+
+    # Fórmulas de custos derivados
+    formulas_custos = {
+        "Custo por convidado": f"=IF(B{r_conv}>0, B{r_custo}/B{r_conv}, 0)",
+        "Custo por participante": f"=IF(B{r_tot}>0, B{r_custo}/B{r_tot}, 0)",
+        "Custo por certificado": f"=IF(B{r_cert}>0, B{r_custo}/B{r_cert}, 0)",
+        "Custo por encontro": f"=IF(B{r_encontros}>0, B{r_custo}/B{r_encontros}, 0)",
+        "Custo por hora prevista": f"=IF(B{r_ch_prev}*24>0, B{r_custo}/(B{r_ch_prev}*24), 0)",
+        "Custo por hora realizada": f"=IF(B{r_ch_real}*24>0, B{r_custo}/(B{r_ch_real}*24), IF(B{r_ch_prev}*24>0, B{r_custo}/(B{r_ch_prev}*24), 0))",
+        "Custo por hora de participação média": f"=IF(B{r_tm_real}*24>0, B{r_custo}/(B{r_tm_real}*24), 0)",
+    }
 
     for num_linha in range(2, planilha.max_row + 1):
         planilha.row_dimensions[num_linha].height = 24
@@ -1937,17 +2075,22 @@ def formatar_aba_custos(planilha, estilos):
         cel_item.font = Font(name="Calibri", size=11, bold=True, color="1F4E78")
         cel_item.alignment = Alignment(horizontal="left", vertical="center")
 
-        item_nome = str(cel_item.value or "")
+        item_nome = str(cel_item.value or "").strip()
+
+        # Injeta fórmula caso seja métrica derivada
+        if item_nome in formulas_custos:
+            cel_val.value = formulas_custos[item_nome]
 
         # Formata custos como moeda brasileira nativa do Excel ("R$" #,##0.00)
         if "Custo" in item_nome:
-            try:
-                val_limpo = str(cel_val.value or "").replace("R$", "").replace("r$", "").strip().replace(",", ".")
-                num_moeda = float(val_limpo)
-                cel_val.value = num_moeda
-                cel_val.number_format = '"R$" #,##0.00'
-            except (ValueError, TypeError):
-                pass
+            if not str(cel_val.value or "").startswith("="):
+                try:
+                    val_limpo = str(cel_val.value or "").replace("R$", "").replace("r$", "").strip().replace(",", ".")
+                    num_moeda = float(val_limpo)
+                    cel_val.value = num_moeda
+                except (ValueError, TypeError):
+                    pass
+            cel_val.number_format = '"R$" #,##0.00'
             cel_val.alignment = Alignment(horizontal="center", vertical="center")
             cel_val.font = Font(name="Calibri", size=11, bold=(item_nome == "Custo total"), color="000000")
         else:
@@ -2134,9 +2277,9 @@ def formatar_workbook(workbook, datas_encontros: Optional[List[str]] = None):
         if sheet.title == "Informações do Curso":
             formatar_aba_informacoes(sheet, estilos)
         elif sheet.title == "Indicadores":
-            formatar_aba_indicadores(sheet, estilos)
+            formatar_aba_indicadores(sheet, estilos, workbook=workbook)
         elif sheet.title == "Custos":
-            formatar_aba_custos(sheet, estilos)
+            formatar_aba_custos(sheet, estilos, workbook=workbook)
         elif sheet.title == "Presenças":
             formatar_aba_presencas(sheet, workbook, estilos, datas_encontros=datas_encontros)
 

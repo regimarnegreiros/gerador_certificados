@@ -1315,9 +1315,13 @@ class TestGeradorCertificados(unittest.TestCase):
         # Checa células de custo com formatação de moeda R$ #,##0.00
         for r in range(2, ws.max_row + 1):
             item = str(ws.cell(row=r, column=1).value)
+            cel = ws.cell(row=r, column=2)
             if "Custo" in item:
-                self.assertIn("R$", ws.cell(row=r, column=2).number_format)
-                self.assertIsInstance(ws.cell(row=r, column=2).value, (int, float))
+                self.assertIn("R$", cel.number_format)
+                if item == "Custo total":
+                    self.assertIsInstance(cel.value, (int, float))
+                else:
+                    self.assertTrue(str(cel.value).startswith("=IF("))
 
     def test_carregar_variaveis_com_sessao_ignorar_emails(self):
         """Testa parsing da seção [INICIO_IGNORAR_EMAILS] em variaveis.txt."""
@@ -1478,10 +1482,11 @@ class TestGeradorCertificados(unittest.TestCase):
             self.assertNotIn("ORGANIZADOR UM", nomes_na_aba)
 
         # Aba Custos: total_convidados deve ser 2 e não 3
-        df_custos = pd.read_excel(caminho_saida, sheet_name="Custos")
-        mapa_c = dict(zip(df_custos["Item"], df_custos["Valor"]))
-        self.assertEqual(mapa_c["Convidados a participar"], 2)
-        self.assertEqual(mapa_c["Custo por convidado"], 500.0)
+        ws_custos = wb["Custos"]
+        mapa_c = {str(ws_custos.cell(row=r, column=1).value): ws_custos.cell(row=r, column=2).value for r in range(2, ws_custos.max_row + 1)}
+        self.assertEqual(mapa_c["Convidados a participar"], "=Indicadores!B2")
+        self.assertEqual(wb["Indicadores"]["B2"].value, "=MAX(0, COUNTA('Certificação'!A:A) - 1)")
+        self.assertEqual(mapa_c["Custo por convidado"], "=IF(B2>0, B5/B2, 0)")
 
     def test_formatar_aba_presencas_mesclagem_titulos(self):
         """Testa mesclagem de títulos 'Encontro n' e 'Comparecimento n' com ID e data na aba Presenças."""
@@ -1524,8 +1529,99 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(ws.column_dimensions["A"].width, 17)
 
 
+    def test_formulas_dinamicas_indicadores_e_custos(self):
+        """Testa a injeção correta de fórmulas dinâmicas do Excel nas abas Indicadores e Custos."""
+        import openpyxl
+        from core.presenca import (
+            criar_aba_indicadores,
+            criar_aba_custos,
+            exportar_excel,
+        )
+
+        relatorio = pd.DataFrame({
+            "Nome": ["Alice Silva", "Bruno Santos", "Carlos Souza"],
+            "Presenças": [2, 1, 0],
+            "Apto por CH": ["APTO", "APTO", "NÃO APTO"],
+        })
+        df_part = pd.DataFrame({
+            "Participante": ["Alice Silva", "Bruno Santos", "Carlos Souza"],
+            "Qtd Presenças": [2, 1, 0],
+            "Câmera": [2, 0, 0],
+            "Microfone": [1, 1, 0],
+            "Total Reações": [5, 2, 0],
+            "Mãos levantadas": [1, 2, 0],
+        })
+        df_enc = pd.DataFrame({
+            "ID": [1, 2],
+            "Data": ["14/09/2026", "15/09/2026"],
+            "CH Realizada": ["04:00:00", "04:00:00"],
+            "Tempo Médio": ["03:00:00", "03:00:00"],
+        })
+        lista_resumos = [
+            {"duracao_segundos": 14400, "tempo_medio_segundos": 10800},
+            {"duracao_segundos": 14400, "tempo_medio_segundos": 10800},
+        ]
+        lista_res = [
+            pd.DataFrame({"Nome": ["Alice Silva", "Bruno Santos"]}),
+            pd.DataFrame({"Nome": ["Alice Silva", "Bruno Santos"]}),
+        ]
+        df_ind = criar_aba_indicadores(3, relatorio, df_part, df_enc, lista_resumos, lista_res)
+        df_custos = criar_aba_custos(
+            total_convidados=3,
+            relatorio=relatorio,
+            quantidade_encontros=2,
+            carga_horaria_horas=10.0,
+            lista_resumos=lista_resumos,
+            lista_resultados_encontros=lista_res,
+            config={"CUSTO_TOTAL_EM_REAIS": 3000.0},
+        )
+
+        saida = self.temp_dir / "teste_formulas_dinamicas.xlsx"
+        exportar_excel(
+            relatorio=relatorio,
+            caminho_saida=saida,
+            df_interacoes_participante=df_part,
+            df_interacoes_encontro=df_enc,
+            df_indicadores=df_ind,
+            df_custos=df_custos,
+        )
+
+        wb = openpyxl.load_workbook(saida)
+        ws_ind = wb["Indicadores"]
+        mapa_ind = {str(ws_ind.cell(row=r, column=1).value): ws_ind.cell(row=r, column=2).value for r in range(2, ws_ind.max_row + 1)}
+
+        # Fórmulas na aba Indicadores
+        self.assertEqual(mapa_ind["Convidados a participar"], "=MAX(0, COUNTA('Certificação'!A:A) - 1)")
+        self.assertEqual(mapa_ind["Participantes totais"], '=COUNTIF(\'Certificação\'!B:B, ">=1")')
+        self.assertEqual(mapa_ind["Participantes certificados"], '=COUNTIF(\'Certificação\'!C:C, "APTO")')
+        self.assertEqual(mapa_ind["Carga horária realizada"], "08:00:00")
+        self.assertEqual(mapa_ind["Tempo médio de participação"], "06:00:00")
+        self.assertEqual(mapa_ind["Taxa de certificação"], "=IF(B2>0, B4/B2, 0)")
+        self.assertEqual(mapa_ind["Participações com Câmera"], '=IF(B3>0, COUNTIF(\'Interações por participante\'!C:C, ">=1")/B3, 0)')
+        self.assertEqual(mapa_ind["Participações com Microfone"], '=IF(B3>0, COUNTIF(\'Interações por participante\'!D:D, ">=1")/B3, 0)')
+        self.assertEqual(mapa_ind["Total de reações"], "=SUM('Interações por participante'!E:E)")
+        self.assertEqual(mapa_ind["Total de mãos levantadas"], "=SUM('Interações por participante'!F:F)")
+
+        # Fórmulas na aba Custos
+        ws_custos = wb["Custos"]
+        mapa_custos = {str(ws_custos.cell(row=r, column=1).value): ws_custos.cell(row=r, column=2).value for r in range(2, ws_custos.max_row + 1)}
+
+        self.assertEqual(mapa_custos["Convidados a participar"], "=Indicadores!B2")
+        self.assertEqual(mapa_custos["Participantes totais"], "=Indicadores!B3")
+        self.assertEqual(mapa_custos["Participantes certificados"], "=Indicadores!B4")
+        self.assertEqual(mapa_custos["Custo total"], 3000.0)
+        self.assertEqual(mapa_custos["Quantidade de encontros"], "=MAX(0, COUNTA('Interações por encontro'!A:A) - 1)")
+        self.assertEqual(mapa_custos["Carga horária"], "10:00:00")
+        self.assertEqual(mapa_custos["Carga horária realizada"], "08:00:00")
+        self.assertEqual(mapa_custos["Tempo médio de participação realizado"], "06:00:00")
+        self.assertEqual(mapa_custos["Custo por convidado"], "=IF(B2>0, B5/B2, 0)")
+        self.assertEqual(mapa_custos["Custo por participante"], "=IF(B3>0, B5/B3, 0)")
+        self.assertEqual(mapa_custos["Custo por certificado"], "=IF(B4>0, B5/B4, 0)")
+        self.assertEqual(mapa_custos["Custo por encontro"], "=IF(B6>0, B5/B6, 0)")
+        self.assertEqual(mapa_custos["Custo por hora prevista"], "=IF(B7*24>0, B5/(B7*24), 0)")
+        self.assertEqual(mapa_custos["Custo por hora realizada"], "=IF(B8*24>0, B5/(B8*24), IF(B7*24>0, B5/(B7*24), 0))")
+        self.assertEqual(mapa_custos["Custo por hora de participação média"], "=IF(B9*24>0, B5/(B9*24), 0)")
+
+
 if __name__ == "__main__":
     unittest.main()
-
-
-
