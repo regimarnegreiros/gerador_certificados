@@ -1240,7 +1240,7 @@ class TestGeradorCertificados(unittest.TestCase):
         ws1 = wb["Interações por participante"]
         cel_cob_cam = ws1.cell(row=2, column=4)
         self.assertIn("%", cel_cob_cam.number_format)
-        self.assertEqual(cel_cob_cam.value, 1.0)
+        self.assertEqual(cel_cob_cam.value, "=IF(B2>0, C2/B2, 0)")
 
         # Valida formatação de porcentagem na Aba 3
         ws3 = wb["Indicadores"]
@@ -1613,7 +1613,7 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(mapa_custos["Quantidade de encontros"], "=MAX(0, COUNTA('Interações por encontro'!A:A) - 1)")
         self.assertEqual(mapa_custos["Carga horária"], "10:00:00")
         self.assertEqual(mapa_custos["Carga horária realizada"], "08:00:00")
-        self.assertEqual(mapa_custos["Tempo médio de participação realizado"], "06:00:00")
+        self.assertEqual(mapa_custos["Tempo médio de participação realizado"], "=Indicadores!B6")
         self.assertEqual(mapa_custos["Custo por convidado"], "=IF(B2>0, B5/B2, 0)")
         self.assertEqual(mapa_custos["Custo por participante"], "=IF(B3>0, B5/B3, 0)")
         self.assertEqual(mapa_custos["Custo por certificado"], "=IF(B4>0, B5/B4, 0)")
