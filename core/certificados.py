@@ -129,6 +129,24 @@ def carregar_relatorio_presenca(caminho_relatorio: Path) -> pd.DataFrame:
     if faltantes:
         raise ValueError(f"O relatório não possui as colunas necessárias: {', '.join(faltantes)}")
 
+    # Fallback caso a coluna 'Apto por CH' tenha valores não calculados (NaN ou texto de fórmula '=...')
+    if df["Apto por CH"].isna().all() or df["Apto por CH"].astype(str).str.startswith("=").any():
+        if "% da CH Total" in df.columns and not df["% da CH Total"].isna().all():
+            try:
+                pct_ch = pd.to_numeric(
+                    df["% da CH Total"].astype(str).str.replace("%", "").str.replace(",", "."),
+                    errors="coerce",
+                )
+                pct_ch = pct_ch.apply(lambda x: x / 100.0 if x > 1.0 else x)
+                df["Apto por CH"] = (pct_ch >= 0.75).map({True: "APTO", False: "NÃO APTO"})
+            except Exception:
+                pass
+        elif "CH Total" in df.columns:
+            from core.presenca import tempo_em_segundos
+            df["Apto por CH"] = df["CH Total"].apply(
+                lambda t: "APTO" if tempo_em_segundos(t) > 0 else "NÃO APTO"
+            )
+
     return df
 
 

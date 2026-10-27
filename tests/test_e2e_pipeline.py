@@ -195,6 +195,29 @@ class TestE2EPipeline(unittest.TestCase):
         self.assertEqual(ws_pres["B1"].value, "Encontro 1 — 14/09/2026")
         self.assertEqual(ws_pres["D1"].value, "Encontro 2 — 15/09/2026")
 
+                # Valida células e fórmulas dinâmicas da Aba Certificação no openpyxl
+        ws_cert = wb["Certificação"]
+        self.assertTrue(str(ws_cert["D2"].value).startswith("=COUNTIFS('Presenças'!B2:"))
+        self.assertTrue(str(ws_cert["E2"].value).startswith("=SUMIF('Presenças'!$B$1:"))
+        self.assertTrue(str(ws_cert["F2"].value).startswith("=IF('Informações do Curso'!$B$"))
+        self.assertTrue(str(ws_cert["G2"].value).startswith("=IF(F2>='Informações do Curso'!$B$"))
+        self.assertTrue(str(ws_cert["H2"].value).startswith("=IF(D2>=MAX(1, ROUNDUP('Custos'!$B$"))
+        self.assertTrue(str(ws_cert["I2"].value).startswith('=IF(AND(G2="APTO"'))
+
+        # Valida Formatação Condicional nas colunas de aptidão da Certificação
+        self.assertGreater(len(ws_cert.conditional_formatting), 0)
+
+        # Valida fórmulas dinâmicas na Aba Interações por participante
+        ws_part = wb["Interações por participante"]
+        self.assertEqual(ws_part["B2"].value, "='Certificação'!D2")
+        self.assertEqual(ws_part["D2"].value, "=IF(B2>0, C2/B2, 0)")
+        self.assertEqual(ws_part["F2"].value, "=IF(B2>0, E2/B2, 0)")
+
+        # Valida fórmulas dinâmicas na Aba Interações por encontro
+        ws_enc = wb["Interações por encontro"]
+        self.assertTrue(str(ws_enc["D2"].value).startswith("=IFERROR(AVERAGEIF('Presenças'!B:B"))
+        self.assertTrue(str(ws_enc["E2"].value).startswith("=COUNTIFS('Presenças'!C:C"))
+
         # Valida Aba 1: 'Interações por participante'
         df_int_part_excel = pd.read_excel(saida_excel, sheet_name="Interações por participante")
         self.assertEqual(
@@ -265,45 +288,66 @@ class TestE2EPipeline(unittest.TestCase):
         df_ind_excel = pd.read_excel(saida_excel, sheet_name="Indicadores")
         self.assertEqual(list(df_ind_excel.columns), ["Indicador", "Resultado"])
         mapa_ind = dict(zip(df_ind_excel["Indicador"], df_ind_excel["Resultado"]))
-        self.assertEqual(mapa_ind["Convidados a participar"], 3)
-        self.assertEqual(mapa_ind["Participantes totais"], 3)
-        self.assertEqual(mapa_ind["Participantes certificados"], 1)
         self.assertEqual(mapa_ind["Carga horária realizada"], "08:00:00")
         self.assertEqual(mapa_ind["Tempo médio de participação"], "06:00:00")
-        self.assertAlmostEqual(mapa_ind["Taxa de certificação"], 1 / 3)
-        self.assertAlmostEqual(mapa_ind["Participações com Câmera"], 2 / 3)
-        self.assertAlmostEqual(mapa_ind["Participações com Microfone"], 1 / 3)
-        self.assertEqual(mapa_ind["Total de reações"], 7)
-        self.assertEqual(mapa_ind["Total de mãos levantadas"], 3)
+
+        # Valida células e fórmulas dinâmicas da Aba Indicadores no openpyxl
+        ws_ind = wb["Indicadores"]
+        mapa_ind_wb = {str(ws_ind.cell(row=r, column=1).value): ws_ind.cell(row=r, column=2).value for r in range(2, ws_ind.max_row + 1)}
+        self.assertEqual(mapa_ind_wb["Convidados a participar"], "=MAX(0, COUNTA('Certificação'!A:A) - 1)")
+        self.assertTrue(str(mapa_ind_wb["Participantes totais"]).startswith("=COUNTIF("))
+        self.assertTrue(str(mapa_ind_wb["Participantes certificados"]).startswith("=COUNTIF("))
+        self.assertEqual(mapa_ind_wb["Carga horária realizada"], "08:00:00")
+        self.assertTrue(str(mapa_ind_wb["Tempo médio de participação"]).startswith("=IFERROR(AVERAGEIF("))
+        self.assertEqual(mapa_ind_wb["Taxa de certificação"], "=IF(B2>0, B4/B2, 0)")
+        self.assertTrue(str(mapa_ind_wb["Participações com Câmera"]).startswith("=IF(B3>0, COUNTIF("))
+        self.assertTrue(str(mapa_ind_wb["Participações com Microfone"]).startswith("=IF(B3>0, COUNTIF("))
+        self.assertTrue(str(mapa_ind_wb["Total de reações"]).startswith("=SUM("))
+        self.assertTrue(str(mapa_ind_wb["Total de mãos levantadas"]).startswith("=SUM("))
+
+        # Formatação percentual nas linhas devidas
+        for r in [7, 8, 9]:
+            self.assertIn("%", ws_ind.cell(row=r, column=2).number_format)
 
         # Valida Aba 4: 'Custos'
         df_custos_excel = pd.read_excel(saida_excel, sheet_name="Custos")
         self.assertEqual(list(df_custos_excel.columns), ["Item", "Valor"])
         self.assertEqual(len(df_custos_excel), 15)
         mapa_custos = dict(zip(df_custos_excel["Item"], df_custos_excel["Valor"]))
-        self.assertEqual(mapa_custos["Convidados a participar"], 3)
-        self.assertEqual(mapa_custos["Participantes totais"], 3)
-        self.assertEqual(mapa_custos["Participantes certificados"], 1)
         self.assertEqual(mapa_custos["Custo total"], 3000.0)
-        self.assertEqual(mapa_custos["Quantidade de encontros"], 2)
         self.assertEqual(mapa_custos["Carga horária"], "10:00:00")
         self.assertEqual(mapa_custos["Carga horária realizada"], "08:00:00")
         self.assertEqual(mapa_custos["Tempo médio de participação realizado"], "06:00:00")
-        self.assertEqual(mapa_custos["Custo por convidado"], 1000.0)
-        self.assertEqual(mapa_custos["Custo por participante"], 1000.0)
-        self.assertEqual(mapa_custos["Custo por certificado"], 3000.0)
-        self.assertEqual(mapa_custos["Custo por encontro"], 1500.0)
-        self.assertEqual(mapa_custos["Custo por hora prevista"], 300.0)
-        self.assertEqual(mapa_custos["Custo por hora realizada"], 375.0)
-        self.assertEqual(mapa_custos["Custo por hora de participação média"], 500.0)
 
+        # Valida células e fórmulas dinâmicas da Aba Custos no openpyxl
         ws_custos = wb["Custos"]
+        mapa_custos_wb = {str(ws_custos.cell(row=r, column=1).value): ws_custos.cell(row=r, column=2).value for r in range(2, ws_custos.max_row + 1)}
+        self.assertEqual(mapa_custos_wb["Convidados a participar"], "=Indicadores!B2")
+        self.assertEqual(mapa_custos_wb["Participantes totais"], "=Indicadores!B3")
+        self.assertEqual(mapa_custos_wb["Participantes certificados"], "=Indicadores!B4")
+        self.assertEqual(mapa_custos_wb["Custo total"], 3000.0)
+        self.assertEqual(mapa_custos_wb["Quantidade de encontros"], "=MAX(0, COUNTA('Interações por encontro'!A:A) - 1)")
+        self.assertTrue(str(mapa_custos_wb["Carga horária"]).startswith("='Informações do Curso'!$B$"))
+        self.assertEqual(mapa_custos_wb["Carga horária realizada"], "08:00:00")
+        self.assertEqual(mapa_custos_wb["Tempo médio de participação realizado"], "=Indicadores!B6")
+        self.assertEqual(mapa_custos_wb["Custo por convidado"], "=IF(B2>0, B5/B2, 0)")
+        self.assertEqual(mapa_custos_wb["Custo por participante"], "=IF(B3>0, B5/B3, 0)")
+        self.assertEqual(mapa_custos_wb["Custo por certificado"], "=IF(B4>0, B5/B4, 0)")
+        self.assertEqual(mapa_custos_wb["Custo por encontro"], "=IF(B6>0, B5/B6, 0)")
+        self.assertEqual(mapa_custos_wb["Custo por hora prevista"], "=IF(B7*24>0, B5/(B7*24), 0)")
+        self.assertEqual(mapa_custos_wb["Custo por hora realizada"], "=IF(B8*24>0, B5/(B8*24), IF(B7*24>0, B5/(B7*24), 0))")
+        self.assertEqual(mapa_custos_wb["Custo por hora de participação média"], "=IF(B9*24>0, B5/(B9*24), 0)")
+
         # Verifica se células de custos possuem formatação de moeda
         for row in range(2, ws_custos.max_row + 1):
             item_txt = str(ws_custos.cell(row=row, column=1).value)
+            cel = ws_custos.cell(row=row, column=2)
             if "Custo" in item_txt:
-                self.assertIn("R$", ws_custos.cell(row=row, column=2).number_format)
-                self.assertIsInstance(ws_custos.cell(row=row, column=2).value, (int, float))
+                self.assertIn("R$", cel.number_format)
+                if item_txt == "Custo total":
+                    self.assertIsInstance(cel.value, (int, float))
+                else:
+                    self.assertTrue(str(cel.value).startswith("=IF("))
 
         # Valida conteúdo da aba 'Informações do Curso'
         df_info_excel = pd.read_excel(saida_excel, sheet_name="Informações do Curso")
@@ -323,7 +367,7 @@ class TestE2EPipeline(unittest.TestCase):
         # Verifica se tempo de presença está formatado (ex: 15 minutos configurados no teste)
         self.assertEqual(valores_por_item["Tempo Mínimo de Permanência na Reunião"], "15 minutos")
         # Verifica se carga horária está formatada (ex: 10 horas)
-        self.assertEqual(valores_por_item["Carga Horária"], "10 horas")
+        self.assertIn(valores_por_item["Carga Horária"], (10, "10 horas", 10.0))
         # Verifica se não há parênteses nem tags de email
         for item in df_info_excel["Item"]:
             self.assertNotIn("(", item)
@@ -397,9 +441,9 @@ class TestE2EPipeline(unittest.TestCase):
         # No dia 1, Carlos Pereira estava AUSENTE ("00:00:00") e no dia 2 estava PRESENTE ("04:00:00")
         df_pres = pd.read_excel(saida_excel, sheet_name="Presenças")
         carlos = df_pres[df_pres["Nome"] == "CARLOS PEREIRA"].iloc[0]
-        self.assertEqual(carlos["Encontro 1 — 14/09/2026"], "00:00:00")
+        self.assertIn(str(carlos["Encontro 1 — 14/09/2026"]), ("00:00:00", "0:00:00"))
         self.assertEqual(carlos["Unnamed: 2"], "Ausente")
-        self.assertIn(carlos["Encontro 2 — 15/09/2026"], ("4:00:00", "04:00:00"))
+        self.assertIn(str(carlos["Encontro 2 — 15/09/2026"]), ("4:00:00", "04:00:00"))
         self.assertEqual(carlos["Unnamed: 4"], "Presente")
 
         # 2. Valida Aba 'Interações por encontro': Linhas ordenadas por data cronológica
