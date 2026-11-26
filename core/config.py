@@ -3,9 +3,9 @@ Módulo para leitura, parsing e validação do arquivo variaveis.txt.
 """
 
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, time
 import re
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from core.caminhos import abrir_arquivo, existe_com_fallback
 
 
@@ -20,6 +20,35 @@ def parse_date(date_str: str) -> datetime:
     """Valida e converte string de data DD/MM/AAAA para objeto datetime."""
     clean = date_str.strip()
     return datetime.strptime(clean, "%d/%m/%Y")
+
+
+def parse_time(time_str: str) -> time:
+    """Valida e converte string de horário ('HH:MM', 'HH:MM:SS' ou 12h 'AM/PM') para datetime.time."""
+    clean = str(time_str).strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(AM|PM))?$", clean, re.IGNORECASE)
+    if not m:
+        raise ValueError(f"Horário inválido: '{time_str}'. Use o formato HH:MM (ex: 08:00).")
+    h, mi, s = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+    ampm = m.group(4)
+    if ampm:
+        if not (1 <= h <= 12):
+            raise ValueError(f"Hora inválida no formato 12h: '{time_str}'.")
+        if ampm.upper() == "AM" and h == 12:
+            h = 0
+        elif ampm.upper() == "PM" and h < 12:
+            h += 12
+    elif not (0 <= h <= 23):
+        raise ValueError(f"Hora inválida: '{time_str}'.")
+    if not (0 <= mi <= 59) or not (0 <= s <= 59):
+        raise ValueError(f"Minutos ou segundos inválidos: '{time_str}'.")
+    return time(h, mi, s)
+
+
+def format_time_str(t: Optional[time]) -> str:
+    """Formata datetime.time para 'HH:MM' (ou 'HH:MM:SS' se houver segundos)."""
+    if t is None:
+        return ""
+    return t.strftime("%H:%M:%S") if t.second else t.strftime("%H:%M")
 
 
 def parse_percentage(val_str: str) -> float:
@@ -291,6 +320,52 @@ def validar_variaveis(config_raw: Dict[str, str]) -> Dict[str, Any]:
         config["TEMPO_MINIMO_PRESENCA_MINUTOS"] = tempo_min
     except ValueError:
         erros.append(f"[ERRO] 'TEMPO_MINIMO_PRESENCA_MINUTOS' deve ser um número inteiro (ex: 30), recebido: '{tempo_min_str}'.")
+
+    # 9.1. HORARIO_INICIO e HORARIO_FIM (opcionais; definem a janela válida da reunião)
+    horario_inicio_str = str(
+        config_raw.get("HORARIO_INICIO")
+        or config_raw.get("HORA_INICIO")
+        or config_raw.get("HORARIO_DE_INICIO")
+        or ""
+    ).strip()
+    tm_inicio: Optional[time] = None
+    if horario_inicio_str:
+        try:
+            tm_inicio = parse_time(horario_inicio_str)
+            config["HORARIO_INICIO"] = format_time_str(tm_inicio)
+            config["TM_INICIO"] = tm_inicio
+        except Exception as e:
+            erros.append(f"[ERRO] 'HORARIO_INICIO' inválido ('{horario_inicio_str}'): {e}")
+            config["HORARIO_INICIO"] = horario_inicio_str
+            config["TM_INICIO"] = None
+    else:
+        config["HORARIO_INICIO"] = ""
+        config["TM_INICIO"] = None
+
+    horario_fim_str = str(
+        config_raw.get("HORARIO_FIM")
+        or config_raw.get("HORA_FIM")
+        or config_raw.get("HORARIO_DE_FIM")
+        or ""
+    ).strip()
+    tm_fim: Optional[time] = None
+    if horario_fim_str:
+        try:
+            tm_fim = parse_time(horario_fim_str)
+            config["HORARIO_FIM"] = format_time_str(tm_fim)
+            config["TM_FIM"] = tm_fim
+        except Exception as e:
+            erros.append(f"[ERRO] 'HORARIO_FIM' inválido ('{horario_fim_str}'): {e}")
+            config["HORARIO_FIM"] = horario_fim_str
+            config["TM_FIM"] = None
+    else:
+        config["HORARIO_FIM"] = ""
+        config["TM_FIM"] = None
+
+    if tm_inicio and tm_fim and tm_fim <= tm_inicio:
+        erros.append(
+            f"[ERRO] 'HORARIO_FIM' ({format_time_str(tm_fim)}) deve ser posterior a 'HORARIO_INICIO' ({format_time_str(tm_inicio)})."
+        )
 
     # 10. ASSUNTO_EMAIL
     assunto = config_raw.get("ASSUNTO_EMAIL", f"Certificado - Curso {nome_curso}").strip()

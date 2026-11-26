@@ -12,6 +12,7 @@ PASSO 1: CONFIGURAÇÃO DE VARIÁVEIS
 --------------------------------------------------------------------------------
 Abra o arquivo 'variaveis.txt' no Bloco de Notas:
 - Ajuste as datas de início e fim (formato DD/MM/AAAA).
+- Se desejar limitar o horário válido dos encontros, ajuste HORARIO_INICIO e HORARIO_FIM (formato HH:MM).
 - Ajuste a carga horária em horas.
 - Ajuste o local e a data de emissão.
 - Se desejar, personalize o texto do e-mail.

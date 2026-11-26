@@ -46,6 +46,12 @@ PERCENTUAL_MINIMO_ENCONTROS = 0.75
 # Tempo mínimo em minutos de permanência na reunião de cada encontro para computar presença (padrão: 30)
 TEMPO_MINIMO_PRESENCA_MINUTOS = 30
 
+# Janela de horário válida de cada encontro no formato HH:MM (ex: 08:00 e 12:00)
+# Se preenchidos, desconta o tempo fora da janela [HORARIO_INICIO, HORARIO_FIM] na Seção 3.
+# Deixe em branco para contabilizar o tempo total sem recorte.
+HORARIO_INICIO =
+HORARIO_FIM =
+
 
 # ------------------------------------------------------------
 # 4. E-MAILS A IGNORAR NOS RELATÓRIOS

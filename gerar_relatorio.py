@@ -114,6 +114,10 @@ def main():
         print(f"     • {negrito('Carga Horária:')}        {config['CARGA_HORARIA']} horas")
         periodo_fim = config['DATA_FIM'] or config['DATA_INICIO']
         print(f"     • {negrito('Período:')}              {config['DATA_INICIO']} a {periodo_fim}")
+        if config.get('HORARIO_INICIO') or config.get('HORARIO_FIM'):
+            h_ini = config.get('HORARIO_INICIO') or 'Início livre'
+            h_fim = config.get('HORARIO_FIM') or 'Fim livre'
+            print(f"     • {negrito('Horário Válido:')}       {h_ini} às {h_fim}")
         print(f"     • {negrito('Critério de Frequência:')} Carga Mínima: {int(config['PERCENTUAL_MINIMO_CARGA'] * 100)}% | Tempo por Encontro: {config['TEMPO_MINIMO_PRESENCA_MINUTOS']} min")
     except ConfigValidationError as e:
         print()
