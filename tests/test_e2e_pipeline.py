@@ -352,7 +352,7 @@ class TestE2EPipeline(unittest.TestCase):
         # Valida conteúdo da aba 'Informações do Curso'
         df_info_excel = pd.read_excel(saida_excel, sheet_name="Informações do Curso")
         self.assertEqual(list(df_info_excel.columns), ["Item", "Configuração", "Observação"])
-        self.assertEqual(len(df_info_excel), 9)
+        self.assertEqual(len(df_info_excel), 11)
 
         valores_por_item = dict(zip(df_info_excel["Item"], df_info_excel["Configuração"]))
         # Verifica se porcentagem está gravada como número nativo com formato percentual (0.75 / 75%)
@@ -452,6 +452,161 @@ class TestE2EPipeline(unittest.TestCase):
         self.assertEqual(df_int_enc.iloc[0]["Data"], "14/09/2026")
         self.assertEqual(df_int_enc.iloc[1]["ID"], 2)
         self.assertEqual(df_int_enc.iloc[1]["Data"], "15/09/2026")
+
+    def test_pipeline_secao3_recorte_horario_e_linhas_repetidas(self):
+        """
+        Valida fluxo E2E completo com HORARIO_INICIO e HORARIO_FIM configurados
+        e presença apurada pela seção '3. Atividades em Reunião' (MM/DD/AA, HH:MM:SS AM/PM),
+        incluindo múltiplas entradas/saídas, 12:xx PM, agrupamento por Email/Nome,
+        e recálculo de Tempo Médio recortado.
+        """
+        pasta = Path(tempfile.mkdtemp()) / "curso_secao3_e2e"
+        try:
+            (pasta / "lista_convidados").mkdir(parents=True)
+            (pasta / "listas_de_presenca").mkdir(parents=True)
+            (pasta / "lista_servidores").mkdir(parents=True)
+            (pasta / "modelo_certificado").mkdir(parents=True)
+
+            (pasta / "variaveis.txt").write_text(
+                "NOME_DO_CURSO = Curso Secao 3\n"
+                "CARGA_HORARIA = 4\n"
+                "CUSTO_TOTAL_EM_REAIS = 1000.00\n"
+                "DATA_INICIO = 02/08/2026\n"
+                "DATA_FIM = 02/08/2026\n"
+                "LOCAL_EMISSAO = Brasília — DF\n"
+                "DATA_EMISSAO = 02/08/2026\n"
+                "PERCENTUAL_MINIMO_CARGA = 0.75\n"
+                "PERCENTUAL_MINIMO_ENCONTROS = 0.75\n"
+                "TEMPO_MINIMO_PRESENCA_MINUTOS = 30\n"
+                "HORARIO_INICIO = 08:00\n"
+                "HORARIO_FIM = 12:00\n"
+                "[INICIO_IGNORAR_EMAILS]\n"
+                "org@anm.gov.br\n"
+                "[FIM_IGNORAR_EMAILS]\n"
+                "[INICIO_CORPO_EMAIL]\n"
+                "Olá {nome}, certificado {CURSO}.\n"
+                "[FIM_CORPO_EMAIL]\n",
+                encoding="utf-8",
+            )
+
+            pd.DataFrame({
+                "NOME SERVIDOR": ["ALICE SILVA", "BRUNO SOUZA", "CARLOS PEREIRA", "ORGANIZADOR"],
+                "UORG": ["SGP", "DITEC", "DIR", "SGP"],
+                "EMAIL": ["alice@anm.gov.br", "bruno@anm.gov.br", "carlos@anm.gov.br", "org@anm.gov.br"],
+            }).to_excel(pasta / "lista_servidores" / "servidores.xlsx", index=False)
+
+            (pasta / "lista_convidados" / "convocados.csv").write_text(
+                "Relatório\nData\nNome\n"
+                "ALICE SILVA <alice@anm.gov.br>\n"
+                "BRUNO SOUZA <bruno@anm.gov.br>\n"
+                "CARLOS PEREIRA <carlos@anm.gov.br>\n"
+                "ORGANIZADOR <org@anm.gov.br>\n",
+                encoding="utf-8",
+            )
+
+            # Encontro único em 8/02/26 (02/08/2026), janela 08:00 às 12:00:
+            # - Alice: 7:45 AM - 12:30 PM -> recortado para 08:00 - 12:00 (4h) -> APTO
+            # - Bruno: duas sessões (8:00 AM - 9:00 AM = 1h; 11:00 AM - 12:15 PM -> 11:00 - 12:00 = 1h),
+            #          sem email na Seção 3 (agrupado por Nome) -> total 2h (< 75% de 4h = 3h) -> NÃO APTO por CH, Presente no encontro
+            # - Carlos: 7:00 AM - 7:50 AM (totalmente fora) -> 0h -> Ausente
+            # - Organizador: ignorado por IGNORAR_EMAILS
+            (pasta / "listas_de_presenca" / "encontro_1.csv").write_text(
+                "1. Resumo da Reunião\n"
+                "Total de participantes\t4\n"
+                "Hora de início\t8/02/26, 7:30:00 AM\n"
+                "Duração da reunião\t5h 0m 0s\n"
+                "Tempo médio de participação\t4h 30m 0s\n"
+                "2. Participantes\n"
+                "Nome\tEmail\tDuração da Reunião\tCompromisso: Câmera Ligada\tCompromisso: Desativar Mudo\n"
+                "Alice Silva\talice@anm.gov.br\t4h 45m 0s\t2\t1\n"
+                "Bruno Souza\tbruno@anm.gov.br\t2h 15m 0s\t1\t0\n"
+                "Carlos Pereira\tcarlos@anm.gov.br\t50m 0s\t0\t0\n"
+                "Organizador\torg@anm.gov.br\t5h 0m 0s\t1\t1\n"
+                "3. Atividades em Reunião\n"
+                "Nome\tHorário de entrada\tHorário de Saída\tDuração\tEmail\tFunção\n"
+                "Alice S.\t8/02/26, 7:45:00 AM\t8/02/26, 12:30:00 PM\t4h 45m 0s\tALICE@ANM.GOV.BR\tParticipante\n"
+                "Bruno Souza\t8/02/26, 8:00:00 AM\t8/02/26, 9:00:00 AM\t1h 0m 0s\t\tParticipante\n"
+                "Bruno Souza\t8/02/26, 11:00:00 AM\t8/02/26, 12:15:00 PM\t1h 15m 0s\t\tParticipante\n"
+                "Carlos Pereira\t8/02/26, 7:00:00 AM\t8/02/26, 7:50:00 AM\t50m 0s\tcarlos@anm.gov.br\tParticipante\n"
+                "Organizador\t8/02/26, 7:30:00 AM\t8/02/26, 12:30:00 PM\t5h 0m 0s\torg@anm.gov.br\tOrganizador\n",
+                encoding="utf-16",
+            )
+
+            from pptx import Presentation
+            prs = Presentation()
+            prs.slides.add_slide(prs.slide_layouts[0])
+            prs.save(pasta / "modelo_certificado" / "modelo.pptx")
+
+            auditoria = validar_estrutura_curso(pasta)
+            config = obter_configuracao(pasta)
+            self.assertEqual(config["HORARIO_INICIO"], "08:00")
+            self.assertEqual(config["HORARIO_FIM"], "12:00")
+
+            saida_excel = pasta / "saida" / "relatorio_presencas" / "Relatorio_Secao3.xlsx"
+            df_cert = gerar_relatorio(
+                caminho_servidores=auditoria["arquivos"]["servidores"],
+                caminho_convocados=auditoria["arquivos"]["convidados"],
+                arquivos_presenca=auditoria["arquivos"]["presencas"],
+                caminho_saida_excel=saida_excel,
+                carga_horaria_horas=config["CARGA_HORARIA"],
+                tempo_comparecimento_minutos=config["TEMPO_MINIMO_PRESENCA_MINUTOS"],
+                percentual_minimo_carga=config["PERCENTUAL_MINIMO_CARGA"],
+                percentual_minimo_encontros=config["PERCENTUAL_MINIMO_ENCONTROS"],
+                config=config,
+            )
+
+            self.assertEqual(len(df_cert), 3)
+            self.assertNotIn("ORGANIZADOR", list(df_cert["Nome"]))
+
+            alice = df_cert[df_cert["Nome"] == "ALICE SILVA"].iloc[0]
+            self.assertEqual(alice["CH Total"], "4:00:00")
+            self.assertEqual(alice["Apto por CH"], "APTO")
+            self.assertEqual(alice["Apto em Ambos"], "APTO")
+
+            bruno = df_cert[df_cert["Nome"] == "BRUNO SOUZA"].iloc[0]
+            self.assertEqual(bruno["CH Total"], "2:00:00")
+            self.assertEqual(bruno["Presenças"], 1)
+            self.assertEqual(bruno["Apto por CH"], "NÃO APTO")
+
+            carlos = df_cert[df_cert["Nome"] == "CARLOS PEREIRA"].iloc[0]
+            self.assertEqual(carlos["CH Total"], "0:00:00")
+            self.assertEqual(carlos["Presenças"], 0)
+            self.assertEqual(carlos["Apto em Ambos"], "NÃO APTO")
+
+            # Tempo Médio recalculado: média de (4h + 2h) = 3h -> 03:00:00 (não 04:30:00 da Seção 1)
+            df_enc = pd.read_excel(saida_excel, sheet_name="Interações por encontro")
+            self.assertEqual(df_enc.iloc[0]["Data"], "02/08/2026")
+            self.assertEqual(df_enc.iloc[0]["Tempo Médio"], "03:00:00")
+            self.assertEqual(df_enc.iloc[0]["Presentes"], "2 de 3")
+
+            df_ind = pd.read_excel(saida_excel, sheet_name="Indicadores")
+            mapa_ind = dict(zip(df_ind["Indicador"], df_ind["Resultado"]))
+            self.assertEqual(mapa_ind["Tempo médio de participação"], "03:00:00")
+
+            df_info = pd.read_excel(saida_excel, sheet_name="Informações do Curso")
+            self.assertEqual(len(df_info), 11)
+            mapa_info = dict(zip(df_info["Item"], df_info["Configuração"]))
+            self.assertEqual(mapa_info["Horário de Início"], "08:00")
+            self.assertEqual(mapa_info["Horário de Fim"], "12:00")
+
+            # Verifica preservação das referências de fórmula ($B$3, $B$8, $B$9) e interações da Seção 2
+            import openpyxl
+            wb_check = openpyxl.load_workbook(saida_excel)
+            ws_cert = wb_check["Certificação"]
+            self.assertEqual(ws_cert["F2"].value, "=IF('Informações do Curso'!$B$3>0, (E2*24)/'Informações do Curso'!$B$3, 0)")
+            self.assertEqual(ws_cert["G2"].value, '=IF(F2>=\'Informações do Curso\'!$B$8, "APTO", "NÃO APTO")')
+            self.assertTrue(str(ws_cert["H2"].value).startswith("=IF(D2>=MAX(1, ROUNDUP('Custos'!$B$6 * 'Informações do Curso'!$B$9, 0))"))
+
+            df_part = pd.read_excel(saida_excel, sheet_name="Interações por participante")
+            alice_int = df_part[df_part["Participante"] == "ALICE SILVA"].iloc[0]
+            self.assertEqual(alice_int["Câmera"], 1)
+            self.assertEqual(alice_int["Microfone"], 1)
+
+            df_custos = pd.read_excel(saida_excel, sheet_name="Custos")
+            mapa_custos = dict(zip(df_custos["Item"], df_custos["Valor"]))
+            self.assertEqual(mapa_custos["Tempo médio de participação realizado"], "03:00:00")
+        finally:
+            shutil.rmtree(pasta, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -7,14 +7,14 @@ from pathlib import Path
 import shutil
 import tempfile
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, time, date
 from pypdf import PdfWriter
 
 import sys
 diretorio_raiz = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(diretorio_raiz))
 
-from core.config import carregar_variaveis, validar_variaveis, ConfigValidationError
+from core.config import carregar_variaveis, validar_variaveis, parse_time, ConfigValidationError
 from core.validator import validar_estrutura_curso, ValidationError, detectar_arquivos_temporarios
 from core.certificados import (
     periodo_por_extenso,
@@ -49,6 +49,11 @@ from core.presenca import (
     extrair_datetime_resumo,
     extrair_data_resumo,
     ler_resumo_reuniao,
+    parse_datetime_atividade,
+    ler_atividades_reuniao,
+    calcular_duracao_recortada_segundos,
+    processar_atividades_reuniao,
+    resolver_data_encontro_consistente,
     ordenar_arquivos_presenca,
     identificar_colunas_metricas,
     processar_interacoes_participantes,
@@ -864,7 +869,7 @@ class TestGeradorCertificados(unittest.TestCase):
 
         # 3 colunas amigáveis: Item, Configuração, Observação
         self.assertEqual(list(df_info.columns), ["Item", "Configuração", "Observação"])
-        self.assertEqual(len(df_info), 9)
+        self.assertEqual(len(df_info), 11)
 
         # Todas as observações devem estar preenchidas com explicações
         for obs in df_info["Observação"]:
@@ -1621,6 +1626,259 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(mapa_custos["Custo por hora prevista"], "=IF(B7*24>0, B5/(B7*24), 0)")
         self.assertEqual(mapa_custos["Custo por hora realizada"], "=IF(B8*24>0, B5/(B8*24), IF(B7*24>0, B5/(B7*24), 0))")
         self.assertEqual(mapa_custos["Custo por hora de participação média"], "=IF(B9*24>0, B5/(B9*24), 0)")
+
+    def test_parse_time_e_variaveis_horario(self):
+        self.assertEqual(parse_time("08:00"), time(8, 0, 0))
+        self.assertEqual(parse_time("8:05:30"), time(8, 5, 30))
+        self.assertEqual(parse_time("12:00 AM"), time(0, 0, 0))
+        self.assertEqual(parse_time("12:30 PM"), time(12, 30, 0))
+        self.assertEqual(parse_time("2:15 PM"), time(14, 15, 0))
+
+        with self.assertRaises(ValueError):
+            parse_time("25:00")
+        with self.assertRaises(ValueError):
+            parse_time("08:60")
+
+        arq = self.temp_dir / "variaveis_horarios.txt"
+        arq.write_text(
+            "NOME_DO_CURSO = Curso Horário\n"
+            "CARGA_HORARIA = 8\n"
+            "DATA_INICIO = 02/08/2026\n"
+            "DATA_EMISSAO = 02/08/2026\n"
+            "HORARIO_INICIO = 08:00\n"
+            "HORARIO_FIM = 12:00\n"
+            "[INICIO_CORPO_EMAIL]\nCorpo\n[FIM_CORPO_EMAIL]\n",
+            encoding="utf-8",
+        )
+        cfg = validar_variaveis(carregar_variaveis(arq))
+        self.assertEqual(cfg["HORARIO_INICIO"], "08:00")
+        self.assertEqual(cfg["HORARIO_FIM"], "12:00")
+        self.assertEqual(cfg["TM_INICIO"], time(8, 0))
+        self.assertEqual(cfg["TM_FIM"], time(12, 0))
+
+        # Horário de fim anterior ou igual ao início deve falhar
+        raw_inv = {
+            "NOME_DO_CURSO": "Teste",
+            "CARGA_HORARIA": "4",
+            "DATA_INICIO": "02/08/2026",
+            "DATA_EMISSAO": "02/08/2026",
+            "HORARIO_INICIO": "14:00",
+            "HORARIO_FIM": "12:00",
+            "CORPO_EMAIL": "Olá",
+        }
+        with self.assertRaises(ConfigValidationError) as ctx:
+            validar_variaveis(raw_inv)
+        self.assertTrue(any("HORARIO_FIM" in e for e in ctx.exception.errors))
+
+    def test_parse_datetime_atividade_mm_dd_aa_e_12h(self):
+        # Formato MM/DD/AA sem zero à esquerda
+        self.assertEqual(
+            parse_datetime_atividade("8/02/26, 8:01:06 AM"),
+            datetime(2026, 8, 2, 8, 1, 6),
+        )
+        self.assertEqual(
+            parse_datetime_atividade("8/2/26, 9:05:00 AM"),
+            datetime(2026, 8, 2, 9, 5, 0),
+        )
+        # Casos críticos de 12:xx AM e 12:xx PM
+        self.assertEqual(
+            parse_datetime_atividade("8/02/26, 12:00:00 AM"),
+            datetime(2026, 8, 2, 0, 0, 0),
+        )
+        self.assertEqual(
+            parse_datetime_atividade("8/02/26, 12:30:15 AM"),
+            datetime(2026, 8, 2, 0, 30, 15),
+        )
+        self.assertEqual(
+            parse_datetime_atividade("8/02/26, 12:00:00 PM"),
+            datetime(2026, 8, 2, 12, 0, 0),
+        )
+        self.assertEqual(
+            parse_datetime_atividade("8/02/26, 12:45:10 PM"),
+            datetime(2026, 8, 2, 12, 45, 10),
+        )
+        self.assertEqual(
+            parse_datetime_atividade("8/02/26, 1:15:20 PM"),
+            datetime(2026, 8, 2, 13, 15, 20),
+        )
+        self.assertIsNone(parse_datetime_atividade(""))
+        self.assertIsNone(parse_datetime_atividade("8/02/26, 13:00:00 AM"))
+
+    def test_calcular_duracao_recortada_regras_intersecao(self):
+        # Janela 08:00 às 12:00
+        h_ini, h_fim = time(8, 0), time(12, 0)
+
+        # 1. Entrou antes (07:30) e saiu depois (12:30) -> 08:00 às 12:00 = 4h (14400s)
+        self.assertEqual(
+            calcular_duracao_recortada_segundos(
+                datetime(2026, 8, 2, 7, 30, 0),
+                datetime(2026, 8, 2, 12, 30, 0),
+                h_ini,
+                h_fim,
+            ),
+            4 * 3600,
+        )
+        # 2. Entrou antes (07:45) e saiu dentro (09:30) -> 08:00 às 09:30 = 1h30m (5400s)
+        self.assertEqual(
+            calcular_duracao_recortada_segundos(
+                datetime(2026, 8, 2, 7, 45, 0),
+                datetime(2026, 8, 2, 9, 30, 0),
+                h_ini,
+                h_fim,
+            ),
+            5400,
+        )
+        # 3. Entrou dentro (10:00) e saiu depois (12:45) -> 10:00 às 12:00 = 2h (7200s)
+        self.assertEqual(
+            calcular_duracao_recortada_segundos(
+                datetime(2026, 8, 2, 10, 0, 0),
+                datetime(2026, 8, 2, 12, 45, 0),
+                h_ini,
+                h_fim,
+            ),
+            7200,
+        )
+        # 4. Totalmente antes (07:00 às 07:59) -> 0s
+        self.assertEqual(
+            calcular_duracao_recortada_segundos(
+                datetime(2026, 8, 2, 7, 0, 0),
+                datetime(2026, 8, 2, 7, 59, 0),
+                h_ini,
+                h_fim,
+            ),
+            0,
+        )
+        # 5. Totalmente depois (12:01 às 13:00) -> 0s
+        self.assertEqual(
+            calcular_duracao_recortada_segundos(
+                datetime(2026, 8, 2, 12, 1, 0),
+                datetime(2026, 8, 2, 13, 0, 0),
+                h_ini,
+                h_fim,
+            ),
+            0,
+        )
+        # 6. Sem janela configurada -> contabiliza intervalo completo (5h = 18000s)
+        self.assertEqual(
+            calcular_duracao_recortada_segundos(
+                datetime(2026, 8, 2, 7, 30, 0),
+                datetime(2026, 8, 2, 12, 30, 0),
+                None,
+                None,
+            ),
+            5 * 3600,
+        )
+
+    def test_ler_e_processar_atividades_reuniao_agrupamento_email_e_nome(self):
+        conteudo = (
+            "1. Resumo da Reunião\n"
+            "Total de participantes\t3\n"
+            "Hora de início\t8/02/26, 8:00:00 AM\n"
+            "Duração da reunião\t4h 0m 0s\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n"
+            "Alice Silva\talice@anm.gov.br\t4h 30m 0s\n"
+            "3. Atividades em Reunião\n"
+            "Nome\tHorário de entrada\tHorário de Saída\tDuração\tEmail\tFunção\n"
+            "Alice Silva\t8/02/26, 7:45:00 AM\t8/02/26, 9:00:00 AM\t1h 15m 0s\tALICE@ANM.GOV.BR\tParticipante\n"
+            "Alice S.\t8/02/26, 10:00:00 AM\t8/02/26, 12:30:00 PM\t2h 30m 0s\talice@anm.gov.br\tParticipante\n"
+            "Bruno Sem Email\t8/02/26, 8:30:00 AM\t8/02/26, 9:30:00 AM\t1h 0m 0s\t\tParticipante\n"
+            "Bruno Sem Email\t8/02/26, 11:00:00 AM\t8/02/26, 12:15:00 PM\t1h 15m 0s\t\tParticipante\n"
+            "Carlos Fora\t8/02/26, 7:00:00 AM\t8/02/26, 7:50:00 AM\t50m 0s\tcarlos@anm.gov.br\tParticipante\n"
+            "Diana Dia Errado\t8/01/26, 9:00:00 AM\t8/01/26, 10:00:00 AM\t1h 0m 0s\tdiana@anm.gov.br\tParticipante\n"
+        )
+        arq = self.temp_dir / "presenca_secao3.csv"
+        arq.write_text(conteudo, encoding="utf-16")
+
+        df_ativ = ler_atividades_reuniao(arq)
+        self.assertIsNotNone(df_ativ)
+        self.assertEqual(len(df_ativ), 6)
+
+        resumo = ler_resumo_reuniao(arq)
+        data_ref = resolver_data_encontro_consistente(resumo, df_ativ)
+        self.assertEqual(data_ref, date(2026, 8, 2))
+
+        df_proc = processar_atividades_reuniao(
+            df_ativ,
+            horario_inicio="08:00",
+            horario_fim="12:00",
+            data_referencia=data_ref,
+        )
+        # Alice: [08:00-09:00] (1h) + [10:00-12:00] (2h) = 3h = 03:00:00
+        alice = df_proc[df_proc["Email"] == "alice@anm.gov.br"].iloc[0]
+        self.assertEqual(alice["Duração da Reunião"], "03:00:00")
+
+        # Bruno (sem email, agrupado por Nome): [08:30-09:30] (1h) + [11:00-12:00] (1h) = 2h = 02:00:00
+        bruno = df_proc[df_proc["Nome"] == "BRUNO SEM EMAIL"].iloc[0]
+        self.assertEqual(bruno["Duração da Reunião"], "02:00:00")
+
+        # Carlos (fora da janela): 00:00:00
+        carlos = df_proc[df_proc["Email"] == "carlos@anm.gov.br"].iloc[0]
+        self.assertEqual(carlos["Duração da Reunião"], "00:00:00")
+
+        # Diana (dia anterior à reunião da Seção 1): 00:00:00
+        diana = df_proc[df_proc["Email"] == "diana@anm.gov.br"].iloc[0]
+        self.assertEqual(diana["Duração da Reunião"], "00:00:00")
+
+    def test_processar_encontro_prioriza_secao3_com_fallback_secao2(self):
+        servidores = pd.DataFrame({
+            "NOME SERVIDOR": ["ALICE SILVA"],
+            "UORG": ["SGP/ANM"],
+        })
+        # Com Seção 3 presente -> usa Seção 3 com recorte (08:00-10:00 = 2h, mesmo Seção 2 dizendo 4h)
+        arq_s3 = self.temp_dir / "com_s3.csv"
+        arq_s3.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/02/26, 8:00:00 AM\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n"
+            "Alice Silva\talice@anm.gov.br\t4h 0m 0s\n"
+            "3. Atividades em Reunião\n"
+            "Nome\tHorário de entrada\tHorário de Saída\tDuração\tEmail\tFunção\n"
+            "Alice Silva\t8/02/26, 7:30:00 AM\t8/02/26, 10:00:00 AM\t2h 30m 0s\talice@anm.gov.br\tParticipante\n",
+            encoding="utf-16",
+        )
+        res_s3, _, _ = processar_encontro(
+            arq_s3, servidores, 1, 30, horario_inicio="08:00", horario_fim="12:00"
+        )
+        self.assertEqual(res_s3.iloc[0]["Duração da Reunião"], "02:00:00")
+        self.assertEqual(res_s3.iloc[0]["Compareceu"], "Presente")
+
+        # Sem Seção 3 -> fallback para Seção 2
+        arq_s2 = self.temp_dir / "sem_s3.csv"
+        arq_s2.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/02/26, 8:00:00 AM\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n"
+            "Alice Silva\talice@anm.gov.br\t3h 0m 0s\n",
+            encoding="utf-16",
+        )
+        res_s2, _, _ = processar_encontro(
+            arq_s2, servidores, 1, 30, horario_inicio="08:00", horario_fim="12:00"
+        )
+        self.assertEqual(res_s2.iloc[0]["Duração da Reunião"], "3h 0m 0s")
+        self.assertEqual(res_s2.iloc[0]["Compareceu"], "Presente")
+
+    def test_ler_atividades_reuniao_csv_virgula_aspas(self):
+        conteudo = (
+            '"1. Resumo"\n'
+            '"Hora de início","8/02/26, 8:00:00 AM"\n'
+            '"2. Participantes"\n'
+            '"Nome","Email","Duração da Reunião"\n'
+            '"Alice Silva","alice@anm.gov.br","2h 0m 0s"\n'
+            '"3. Atividades em Reunião"\n'
+            '"Nome","Horário de entrada","Horário de Saída","Duração","Email","Função"\n'
+            '"Alice Silva","8/02/26, 7:45:00 AM","8/02/26, 9:30:00 AM","1h 45m 0s","alice@anm.gov.br","Participante"\n'
+        )
+        arq = self.temp_dir / "secao3_virgula.csv"
+        arq.write_text(conteudo, encoding="utf-8")
+
+        df_ativ = ler_atividades_reuniao(arq)
+        self.assertIsNotNone(df_ativ)
+        self.assertEqual(len(df_ativ), 1)
+        df_proc = processar_atividades_reuniao(df_ativ, horario_inicio="08:00", horario_fim="12:00")
+        self.assertEqual(df_proc.iloc[0]["Duração da Reunião"], "01:30:00")
 
 
 if __name__ == "__main__":
