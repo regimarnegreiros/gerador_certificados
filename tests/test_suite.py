@@ -14,7 +14,33 @@ import sys
 diretorio_raiz = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(diretorio_raiz))
 
-from core.config import carregar_variaveis, validar_variaveis, parse_time, ConfigValidationError
+from core.config import (
+    CursoConfig,
+    EncontroConfig,
+    DEFAULT_CORPO_EMAIL,
+    carregar_curso_json,
+    salvar_curso_json,
+    validar_curso_config,
+    migrar_curso_dict,
+    parse_time,
+    ConfigValidationError,
+)
+from core.cursos_repo import (
+    aplicar_horario_para_todos_encontros,
+    atualizar_horario_encontro,
+    calcular_tempo_sugerido_encontro,
+    criar_curso,
+    definir_modelo_global,
+    definir_servidores_global,
+    excluir_curso,
+    importar_convidados,
+    importar_listas_presenca,
+    listar_cursos,
+    obter_status_recursos_globais,
+    remover_justificativa,
+    remover_lista_presenca,
+    salvar_justificativa,
+)
 from core.validator import validar_estrutura_curso, ValidationError, detectar_arquivos_temporarios
 from core.certificados import (
     periodo_por_extenso,
@@ -210,27 +236,24 @@ class TestGeradorCertificados(unittest.TestCase):
             ["Nome", "Encontro 1", "Comparecimento 1"]
         )
 
-    def test_parser_variaveis_valido(self):
-        caminho_var = self.temp_dir / "variaveis.txt"
-        conteudo = """
-        NOME_DO_CURSO = Curso Teste ANM
-        CARGA_HORARIA = 16
-        DATA_INICIO = 10/08/2026
-        DATA_FIM = 14/08/2026
-        LOCAL_EMISSAO = Brasília — DF
-        DATA_EMISSAO = 14/08/2026
-        PERCENTUAL_MINIMO_CARGA = 75%
-        PERCENTUAL_MINIMO_ENCONTROS = 0.75
-        TEMPO_MINIMO_PRESENCA_MINUTOS = 30
-        ASSUNTO_EMAIL = Certificado - {CURSO}
-
-        [INICIO_CORPO_EMAIL]
-        Olá {nome}, segue certificado do curso {CURSO}.
-        [FIM_CORPO_EMAIL]
-        """
-        caminho_var.write_text(conteudo, encoding="utf-8")
-        raw = carregar_variaveis(caminho_var)
-        config = validar_variaveis(raw)
+    def test_config_json_valido_e_salvar_carregar(self):
+        caminho_json = self.temp_dir / "curso.json"
+        cfg_obj = CursoConfig(
+            id_curso="c_2026_001",
+            nome_do_curso="Curso Teste ANM",
+            carga_horaria=16,
+            data_inicio="10/08/2026",
+            data_fim="14/08/2026",
+            data_emissao="14/08/2026",
+            percentual_minimo_carga=0.75,
+            percentual_minimo_encontros=0.75,
+            tempo_minimo_presenca_minutos=30,
+            assunto_email="Certificado - {CURSO}",
+            corpo_email="Olá {nome}, segue certificado do curso {CURSO}.",
+        )
+        salvar_curso_json(caminho_json, cfg_obj)
+        carregado = carregar_curso_json(caminho_json)
+        config = validar_curso_config(carregado)
 
         self.assertEqual(config["NOME_DO_CURSO"], "Curso Teste ANM")
         self.assertEqual(config["CARGA_HORARIA"], 16)
@@ -238,44 +261,11 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(config["PERCENTUAL_MINIMO_ENCONTROS"], 0.75)
         self.assertIn("Olá {nome}", config["CORPO_EMAIL"])
 
-    def test_corpo_email_sem_comentarios_indesejados(self):
-        # 1. Testa arquivo com explicações e divisórias # --- antes/fora do bloco
-        caminho_template = self.temp_dir / "variaveis_template_simulado.txt"
-        caminho_template.write_text(
-            "NOME_DO_CURSO = Curso Teste\n"
-            "ASSUNTO_EMAIL = Certificado - Curso {CURSO}\n"
-            "[INICIO_CORPO_EMAIL]\n"
-            "# --- separador\n"
-            "Prezada(o) {nome},\n\n"
-            "Encaminhamos seu certificado.\n"
-            "[FIM_CORPO_EMAIL]\n",
-            encoding="utf-8",
-        )
-        config_template = carregar_variaveis(caminho_template)
-        corpo = config_template["CORPO_EMAIL"]
-        self.assertFalse(corpo.startswith("#"))
-        self.assertTrue(corpo.startswith("Prezada(o) {nome},"))
+    def test_corpo_email_padrao_divcam_e_limpeza(self):
+        self.assertIn("DIVCAM", DEFAULT_CORPO_EMAIL)
+        self.assertIn("SGP/ANM", DEFAULT_CORPO_EMAIL)
+        self.assertTrue(DEFAULT_CORPO_EMAIL.startswith("Prezada(o) {nome},"))
 
-        # 2. Testa caso o usuário tenha deixado um comentário acidental dentro de [INICIO_CORPO_EMAIL]
-        caminho_var = self.temp_dir / "variaveis_com_comentario.txt"
-        conteudo = """
-        NOME_DO_CURSO = Curso Teste
-        CARGA_HORARIA = 10
-        DATA_INICIO = 10/08/2026
-        LOCAL_EMISSAO = Brasília
-        DATA_EMISSAO = 10/08/2026
-        [INICIO_CORPO_EMAIL]
-        # ------------------------------------------------------------
-        # CORPO DO E-MAIL
-        Prezada(o) {nome}, seu certificado de {CURSO} está pronto.
-        [FIM_CORPO_EMAIL]
-        """
-        caminho_var.write_text(conteudo, encoding="utf-8")
-        raw = carregar_variaveis(caminho_var)
-        self.assertTrue(raw["CORPO_EMAIL"].startswith("Prezada(o) {nome},"))
-        self.assertNotIn("# ------------------------------------------------------------", raw["CORPO_EMAIL"])
-
-        # 3. Testa função criar_corpo_email diretamente com comentário inicial
         texto_final = criar_corpo_email(
             nome="João",
             template_corpo="# ------------------------------------------------------------\nOlá {nome}, curso {CURSO}!",
@@ -283,25 +273,25 @@ class TestGeradorCertificados(unittest.TestCase):
         )
         self.assertEqual(texto_final, "Olá João, curso Direito!")
 
-    def test_parser_variaveis_erros(self):
+    def test_config_json_erros_validacao(self):
         raw_invalido = {
-            "NOME_DO_CURSO": "",
-            "CARGA_HORARIA": "abc",
-            "DATA_INICIO": "data_errada",
+            "nome_do_curso": "",
+            "carga_horaria": "abc",
+            "data_inicio": "data_errada",
         }
         with self.assertRaises(ConfigValidationError) as ctx:
-            validar_variaveis(raw_invalido)
+            validar_curso_config(raw_invalido)
         erros = ctx.exception.errors
-        self.assertTrue(any("NOME_DO_CURSO" in e for e in erros))
-        self.assertTrue(any("CARGA_HORARIA" in e for e in erros))
-        self.assertTrue(any("DATA_INICIO" in e for e in erros))
+        self.assertTrue(any("Nome do curso" in e for e in erros))
+        self.assertTrue(any("Carga horária" in e for e in erros))
+        self.assertTrue(any("Data de início" in e for e in erros))
 
     def test_validador_pastas_faltantes(self):
-        # Pasta vazia sem estrutura
+        # Pasta vazia sem estrutura nova (curso.json e entrada/)
         with self.assertRaises(ValidationError) as ctx:
             validar_estrutura_curso(self.temp_dir)
-        self.assertTrue(any("variaveis.txt" in e for e in ctx.exception.erros))
-        self.assertTrue(any("lista_convidados" in e for e in ctx.exception.erros))
+        self.assertTrue(any("curso.json" in e for e in ctx.exception.erros))
+        self.assertTrue(any("entrada" in e for e in ctx.exception.erros))
 
     def test_validador_detecta_arquivos_office_temporarios(self):
         temp_office = self.temp_dir / "~$planilha.xlsx"
@@ -526,13 +516,13 @@ class TestGeradorCertificados(unittest.TestCase):
         garantir_diretorio(pasta_profunda)
         self.assertTrue(existe_com_fallback(pasta_profunda))
 
-        arq_profundo = pasta_profunda / "variaveis.txt"
+        arq_profundo = pasta_profunda / "curso.json"
         with abrir_arquivo(arq_profundo, "w", encoding="utf-8") as f:
-            f.write("NOME_DO_CURSO = Teste Longo\nCARGA_HORARIA = 20\n")
+            f.write('{"nome_do_curso": "Teste Longo", "carga_horaria": 20}\n')
 
         self.assertTrue(existe_com_fallback(arq_profundo))
         with abrir_arquivo(arq_profundo, "r", encoding="utf-8") as f:
-            self.assertIn("NOME_DO_CURSO", f.read())
+            self.assertIn("nome_do_curso", f.read())
 
     def test_verificar_profundidade_caminho(self):
         caminho_curto = "C:/Cursos/curso_anm"
@@ -1339,48 +1329,38 @@ class TestGeradorCertificados(unittest.TestCase):
                 else:
                     self.assertTrue(str(cel.value).startswith("=IF("))
 
-    def test_carregar_variaveis_com_sessao_ignorar_emails(self):
-        """Testa parsing da seção [INICIO_IGNORAR_EMAILS] em variaveis.txt."""
-        conteudo = """
-        NOME_DO_CURSO = Curso Teste
-        CARGA_HORARIA = 20
-        DATA_INICIO = 01/08/2026
-        DATA_FIM = 05/08/2026
-        DATA_EMISSAO = 05/08/2026
-
-        [INICIO_IGNORAR_EMAILS]
-        organizador1@exemplo.gov.br
-        organizador2@exemplo.gov.br
-        organizador3@exemplo.gov.br
-        [FIM_IGNORAR_EMAILS]
-
-        [INICIO_CORPO_EMAIL]
-        Corpo teste
-        [FIM_CORPO_EMAIL]
-        """
-        arq = self.temp_dir / "variaveis_ignorar.txt"
-        arq.write_text(conteudo, encoding="utf-8")
-
-        raw = carregar_variaveis(arq)
-        self.assertIn("IGNORAR_EMAILS", raw)
-        self.assertEqual(
-            raw["IGNORAR_EMAILS"],
-            [
-                "organizador1@exemplo.gov.br",
+    def test_config_ignorar_emails_e_migracao_schema(self):
+        """Testa normalização de ignorar_emails e migração encadeada de schema_version."""
+        raw_v1 = {
+            "schema_version": 1,
+            "nome_do_curso": "Curso Teste",
+            "carga_horaria": 20,
+            "data_inicio": "01/08/2026",
+            "data_fim": "05/08/2026",
+            "data_emissao": "05/08/2026",
+            "ignorar_emails": [
+                "Organizador Um <organizador1@exemplo.gov.br>",
                 "organizador2@exemplo.gov.br",
-                "organizador3@exemplo.gov.br",
-            ]
-        )
-
-        cfg = validar_variaveis(raw)
+                "ORGANIZADOR1@EXEMPLO.GOV.BR",
+            ],
+            "corpo_email": "Corpo teste",
+        }
+        cfg = validar_curso_config(raw_v1)
         self.assertEqual(
             cfg["IGNORAR_EMAILS"],
-            [
-                "organizador1@exemplo.gov.br",
-                "organizador2@exemplo.gov.br",
-                "organizador3@exemplo.gov.br",
-            ]
+            ["organizador1@exemplo.gov.br", "organizador2@exemplo.gov.br"],
         )
+
+        # Testa motor de migração em cadeia v1 -> v2 -> v3
+        registro_teste = {
+            1: lambda d: {**d, "modalidade": "Online"},
+            2: lambda d: {**d, "codigo_sigepe": "ANM-01"},
+        }
+        migrado, flag = migrar_curso_dict(raw_v1, versao_alvo=3, registro_migracoes=registro_teste)
+        self.assertTrue(flag)
+        self.assertEqual(migrado["schema_version"], 3)
+        self.assertEqual(migrado["modalidade"], "Online")
+        self.assertEqual(migrado["codigo_sigepe"], "ANM-01")
 
     def test_filtrar_emails_ignorados(self):
         """Testa função filtrar_emails_ignorados com diferentes maiúsculas/minúsculas e formatos."""
@@ -1650,36 +1630,130 @@ class TestGeradorCertificados(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_time("08:60")
 
-        arq = self.temp_dir / "variaveis_horarios.txt"
-        arq.write_text(
-            "NOME_DO_CURSO = Curso Horário\n"
-            "CARGA_HORARIA = 8\n"
-            "DATA_INICIO = 02/08/2026\n"
-            "DATA_EMISSAO = 02/08/2026\n"
-            "HORARIO_INICIO = 08:00\n"
-            "HORARIO_FIM = 12:00\n"
-            "[INICIO_CORPO_EMAIL]\nCorpo\n[FIM_CORPO_EMAIL]\n",
-            encoding="utf-8",
+        cfg_obj = CursoConfig(
+            id_curso="c_2026_001",
+            nome_do_curso="Curso Horário",
+            carga_horaria=8,
+            data_inicio="02/08/2026",
+            data_emissao="02/08/2026",
+            encontros=[
+                EncontroConfig(arquivo="dia1.csv", horario_inicio="08:00", horario_fim="12:00"),
+                EncontroConfig(arquivo="dia2.csv", horario_inicio="14:00", horario_fim="18:00"),
+            ],
         )
-        cfg = validar_variaveis(carregar_variaveis(arq))
-        self.assertEqual(cfg["HORARIO_INICIO"], "08:00")
-        self.assertEqual(cfg["HORARIO_FIM"], "12:00")
-        self.assertEqual(cfg["TM_INICIO"], time(8, 0))
-        self.assertEqual(cfg["TM_FIM"], time(12, 0))
+        cfg = validar_curso_config(cfg_obj)
+        self.assertEqual(len(cfg["ENCONTROS"]), 2)
+        self.assertEqual(cfg["ENCONTROS"][0]["horario_inicio"], "08:00")
+        self.assertEqual(cfg["ENCONTROS"][1]["horario_fim"], "18:00")
 
         # Horário de fim anterior ou igual ao início deve falhar
         raw_inv = {
-            "NOME_DO_CURSO": "Teste",
-            "CARGA_HORARIA": "4",
-            "DATA_INICIO": "02/08/2026",
-            "DATA_EMISSAO": "02/08/2026",
-            "HORARIO_INICIO": "14:00",
-            "HORARIO_FIM": "12:00",
-            "CORPO_EMAIL": "Olá",
+            "nome_do_curso": "Teste",
+            "carga_horaria": 4,
+            "data_inicio": "02/08/2026",
+            "data_emissao": "02/08/2026",
+            "encontros": [
+                {"arquivo": "dia1.csv", "horario_inicio": "14:00", "horario_fim": "12:00"},
+            ],
+            "corpo_email": "Olá",
         }
         with self.assertRaises(ConfigValidationError) as ctx:
-            validar_variaveis(raw_inv)
-        self.assertTrue(any("HORARIO_FIM" in e for e in ctx.exception.errors))
+            validar_curso_config(raw_inv)
+        self.assertTrue(any("Horário de fim" in e for e in ctx.exception.errors))
+
+    def test_cursos_repo_globais_autopreenchimento_e_justificativas(self):
+        raiz = self.temp_dir / "raiz_app"
+        staging = self.temp_dir / "staging_repo"
+        staging.mkdir(parents=True)
+
+        # 1. Recursos globais
+        arq_serv = staging / "Servidores_ANM_2026.xlsx"
+        pd.DataFrame({"NOME SERVIDOR": ["ALICE"], "UORG": ["SGP"]}).to_excel(arq_serv, index=False)
+        definir_servidores_global(arq_serv, raiz=raiz)
+
+        from pptx import Presentation
+        arq_mod = staging / "Certificado_Modelo.pptx"
+        prs = Presentation()
+        prs.slides.add_slide(prs.slide_layouts[0])
+        prs.save(arq_mod)
+        definir_modelo_global(arq_mod, raiz=raiz)
+
+        status_g = obter_status_recursos_globais(raiz=raiz)
+        self.assertTrue(status_g["servidores_disponivel"])
+        self.assertEqual(status_g["servidores_nome"], "Servidores_ANM_2026.xlsx")
+        self.assertTrue(status_g["modelo_disponivel"])
+        self.assertEqual(status_g["modelo_nome"], "Certificado_Modelo.pptx")
+
+        # 2. Cria curso e importa convidados + 2 listas de presença com '1. Resumo'
+        pasta_curso, cfg_ini = criar_curso("Curso de Capacitação ANM", raiz=raiz)
+        self.assertEqual(cfg_ini.id_curso, f"c_{datetime.now().year}_001")
+
+        arq_conv = staging / "convidados_oficiais.csv"
+        arq_conv.write_text("Relatório\nData\nNome\nALICE <alice@anm.gov.br>\n", encoding="utf-8")
+        importar_convidados(pasta_curso, arq_conv)
+
+        csv1 = staging / "encontro_a.csv"
+        csv1.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/10/26, 8:00:00 AM\n"
+            "Hora de término\t8/10/26, 12:00:00 PM\n"
+            "Duração da reunião\t4h 0m 0s\n"
+            "Tempo médio de participação\t3h 30m 0s\n"
+            "2. Participantes\nNome\tEmail\tDuração da Reunião\n",
+            encoding="utf-16",
+        )
+        csv2 = staging / "encontro_b.csv"
+        csv2.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/12/26, 2:00:00 PM\n"
+            "Hora de término\t8/12/26, 6:00:00 PM\n"
+            "Duração da reunião\t4h 0m 0s\n"
+            "Tempo médio de participação\t4h 30m 0s\n"
+            "2. Participantes\nNome\tEmail\tDuração da Reunião\n",
+            encoding="utf-16",
+        )
+        cfg_pos = importar_listas_presenca(pasta_curso, [csv2, csv1])
+
+        # Soma dos tempos médios: 3h30m + 4h30m = 8h; datas 10/08/2026 a 12/08/2026
+        self.assertEqual(cfg_pos.carga_horaria, 8)
+        self.assertEqual(cfg_pos.data_inicio, "10/08/2026")
+        self.assertEqual(cfg_pos.data_fim, "12/08/2026")
+        self.assertEqual(cfg_pos.data_emissao, "12/08/2026")
+        self.assertEqual(len(cfg_pos.encontros), 2)
+        self.assertEqual(cfg_pos.encontros[0].arquivo, "encontro_a.csv")
+        self.assertEqual(cfg_pos.encontros[0].horario_inicio, "08:00")
+        self.assertEqual(cfg_pos.encontros[0].horario_fim, "12:00")
+        self.assertEqual(cfg_pos.encontros[1].arquivo, "encontro_b.csv")
+        self.assertEqual(cfg_pos.encontros[1].horario_inicio, "14:00")
+        self.assertEqual(cfg_pos.encontros[1].horario_fim, "18:00")
+
+        # 3. Atualiza horário individual e aplica em todos
+        cfg_h = atualizar_horario_encontro(pasta_curso, "encontro_a.csv", "08:30", "11:30")
+        self.assertEqual(cfg_h.encontros[0].horario_inicio, "08:30")
+        self.assertEqual(calcular_tempo_sugerido_encontro(cfg_h, "encontro_a.csv"), 10800)
+
+        cfg_todos = aplicar_horario_para_todos_encontros(pasta_curso, "09:00", "12:00")
+        self.assertTrue(all(e.horario_inicio == "09:00" and e.horario_fim == "12:00" for e in cfg_todos.encontros))
+
+        # 4. Justificativas: salvar, listar e remover
+        cfg_j = salvar_justificativa(pasta_curso, "ALICE", "alice@anm.gov.br", "encontro_a.csv", 10800, "Atestado")
+        self.assertEqual(len(cfg_j.justificativas), 1)
+        cfg_rem_enc = remover_lista_presenca(pasta_curso, "encontro_a.csv")
+        self.assertEqual(len(cfg_rem_enc.encontros), 1)
+        self.assertEqual(len(cfg_rem_enc.justificativas), 0)
+
+        cfg_j2 = salvar_justificativa(pasta_curso, "ALICE", "alice@anm.gov.br", "encontro_b.csv", 14400)
+        self.assertEqual(len(cfg_j2.justificativas), 1)
+        cfg_sem_j = remover_justificativa(pasta_curso, "ALICE", "alice@anm.gov.br", "encontro_b.csv")
+        self.assertEqual(len(cfg_sem_j.justificativas), 0)
+
+        # 5. Listagem e exclusão de curso
+        cursos = listar_cursos(raiz=raiz)
+        self.assertEqual(len(cursos), 1)
+        self.assertTrue(cursos[0]["tem_convidados"])
+        self.assertEqual(cursos[0]["qtd_presencas"], 1)
+        excluir_curso(pasta_curso)
+        self.assertEqual(len(listar_cursos(raiz=raiz)), 0)
 
     def test_parse_datetime_atividade_mm_dd_aa_e_12h(self):
         # Formato MM/DD/AA sem zero à esquerda

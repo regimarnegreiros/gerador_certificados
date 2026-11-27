@@ -18,52 +18,48 @@ diretorio_raiz = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(diretorio_raiz))
 
 from core.validator import validar_estrutura_curso
-from core.config import obter_configuracao
+from core.config import obter_configuracao, salvar_curso_json, CursoConfig
+from core.cursos_repo import (
+    criar_curso,
+    definir_modelo_global,
+    definir_servidores_global,
+    importar_convidados,
+    importar_listas_presenca,
+)
 from core.presenca import gerar_relatorio
 
 
 class TestE2EPipeline(unittest.TestCase):
 
     def setUp(self):
-        self.temp_curso = Path(tempfile.mkdtemp()) / "curso_teste_integracao"
-        self.temp_curso.mkdir(parents=True)
+        self.temp_raiz = Path(tempfile.mkdtemp())
+        self.temp_staging = self.temp_raiz / "_staging"
+        self.temp_staging.mkdir(parents=True)
 
-        # 1. Estrutura de pastas
-        (self.temp_curso / "lista_convidados").mkdir()
-        (self.temp_curso / "listas_de_presenca").mkdir()
-        (self.temp_curso / "lista_servidores").mkdir()
-        (self.temp_curso / "modelo_certificado").mkdir()
+        # 1. Cria curso pela camada de repositório (estrutura global/ + cursos/id/)
+        self.temp_curso, cfg = criar_curso("Curso de Teste Unitario", raiz=self.temp_raiz)
+        cfg.carga_horaria = 10
+        cfg.custo_total_em_reais = 3000.00
+        cfg.data_inicio = "01/09/2026"
+        cfg.data_fim = "02/09/2026"
+        cfg.data_emissao = "02/09/2026"
+        cfg.tempo_minimo_presenca_minutos = 15
+        cfg.assunto_email = "Certificado - {CURSO}"
+        cfg.corpo_email = "Olá {nome}, seu certificado está pronto."
+        cfg.campos_editados_manualmente = ["carga_horaria", "data_inicio", "data_fim", "data_emissao"]
+        salvar_curso_json(self.temp_curso / "curso.json", cfg)
 
-        # 2. variaveis.txt
-        var_content = """
-        NOME_DO_CURSO = Curso de Teste Unitario
-        CARGA_HORARIA = 10
-        CUSTO_TOTAL_EM_REAIS = 3000.00
-        DATA_INICIO = 01/09/2026
-        DATA_FIM = 02/09/2026
-        LOCAL_EMISSAO = Brasília — DF
-        DATA_EMISSAO = 02/09/2026
-        PERCENTUAL_MINIMO_CARGA = 0.75
-        PERCENTUAL_MINIMO_ENCONTROS = 0.75
-        TEMPO_MINIMO_PRESENCA_MINUTOS = 15
-        ASSUNTO_EMAIL = Certificado - {CURSO}
-
-        [INICIO_CORPO_EMAIL]
-        Olá {nome}, seu certificado está pronto.
-        [FIM_CORPO_EMAIL]
-        """
-        (self.temp_curso / "variaveis.txt").write_text(var_content, encoding="utf-8")
-
-        # 3. Planilha de Servidores Excel (.xlsx)
+        # 2. Planilha global de Servidores Excel (.xlsx)
         df_servidores = pd.DataFrame({
             "NOME SERVIDOR": ["ALICE SILVA", "BRUNO SOUZA", "CARLOS PEREIRA"],
             "UORG": ["SGP/ANM", "DITEC/ANM", "SGP/ANM"],
             "EMAIL": ["alice@anm.gov.br", "bruno@anm.gov.br", "carlos@anm.gov.br"],
         })
-        df_servidores.to_excel(self.temp_curso / "lista_servidores" / "servidores.xlsx", index=False)
+        arq_serv = self.temp_staging / "servidores.xlsx"
+        df_servidores.to_excel(arq_serv, index=False)
+        definir_servidores_global(arq_serv, raiz=self.temp_raiz)
 
-        # 4. Lista de Convocados (.csv)
-        # Formato do Teams: 2 linhas de cabeçalho, depois "Nome <email>"
+        # 3. Lista de Convocados (.csv)
         convocados_content = (
             "Relatório de Convocados\n"
             "Gerado em 01/09/2026\n"
@@ -72,10 +68,11 @@ class TestE2EPipeline(unittest.TestCase):
             "BRUNO SOUZA <bruno@anm.gov.br>\n"
             "CARLOS PEREIRA <carlos@anm.gov.br>\n"
         )
-        (self.temp_curso / "lista_convidados" / "convocados.csv").write_text(convocados_content, encoding="utf-8")
+        arq_conv = self.temp_staging / "convocados.csv"
+        arq_conv.write_text(convocados_content, encoding="utf-8")
+        importar_convidados(self.temp_curso, arq_conv)
 
-        # 5. Listas de Presença (.csv diários - formato Teams)
-        # Teams tem seção "1. Resumo", depois "2. Participantes" com interações, depois "3. Atividades em Reunião"
+        # 4. Listas de Presença (.csv diários - formato Teams)
         def gerar_presenca_teams(participantes, data_inicio="9/14/26,8:01:54 AM", duracao="4h 0m 0s", tempo_medio="3h 0m 0s"):
             linhas = [
                 "1. Resumo da Reunião",
@@ -105,23 +102,29 @@ class TestE2EPipeline(unittest.TestCase):
             ("Alice Silva", "alice@anm.gov.br", "4h 0m 0s", "1", "2", "1", "3", "2"),
             ("Bruno Souza", "bruno@anm.gov.br", "4h 0m 0s", "", "", "", "", ""),
         ], data_inicio="9/14/26,8:01:54 AM", duracao="4h 0m 0s")
-        (self.temp_curso / "listas_de_presenca" / "dia_1.csv").write_text(dia1, encoding="utf-16")
+        arq_d1 = self.temp_staging / "dia_1.csv"
+        arq_d1.write_text(dia1, encoding="utf-16")
 
         # Encontro 2: Alice 4h (cam=1, mic=1, mao=2, aplauso=1, curtir=1), Carlos 4h (cam=1), Bruno ausente
         dia2 = gerar_presenca_teams([
             ("Alice Silva", "alice@anm.gov.br", "4h 0m 0s", "1", "1", "2", "1", "1"),
             ("Carlos Pereira", "carlos@anm.gov.br", "4h 0m 0s", "1", "", "", "", ""),
         ], data_inicio="9/15/26,8:01:54 AM", duracao="4h 0m 0s")
-        (self.temp_curso / "listas_de_presenca" / "dia_2.csv").write_text(dia2, encoding="utf-16")
+        arq_d2 = self.temp_staging / "dia_2.csv"
+        arq_d2.write_text(dia2, encoding="utf-16")
 
-        # 6. Modelo de PPTX mínimo
+        importar_listas_presenca(self.temp_curso, [arq_d1, arq_d2])
+
+        # 5. Modelo global de PPTX mínimo
         from pptx import Presentation
         prs = Presentation()
         prs.slides.add_slide(prs.slide_layouts[0])
-        prs.save(self.temp_curso / "modelo_certificado" / "modelo.pptx")
+        arq_modelo = self.temp_staging / "modelo.pptx"
+        prs.save(arq_modelo)
+        definir_modelo_global(arq_modelo, raiz=self.temp_raiz)
 
     def tearDown(self):
-        shutil.rmtree(self.temp_curso.parent, ignore_errors=True)
+        shutil.rmtree(self.temp_raiz, ignore_errors=True)
 
     def test_pipeline_completo_relatorio(self):
         # 1. Valida estrutura
@@ -460,42 +463,28 @@ class TestE2EPipeline(unittest.TestCase):
         incluindo múltiplas entradas/saídas, 12:xx PM, agrupamento por Email/Nome,
         e recálculo de Tempo Médio recortado.
         """
-        pasta = Path(tempfile.mkdtemp()) / "curso_secao3_e2e"
+        raiz_sec3 = Path(tempfile.mkdtemp())
         try:
-            (pasta / "lista_convidados").mkdir(parents=True)
-            (pasta / "listas_de_presenca").mkdir(parents=True)
-            (pasta / "lista_servidores").mkdir(parents=True)
-            (pasta / "modelo_certificado").mkdir(parents=True)
+            pasta, cfg_sec3 = criar_curso("Curso Secao 3", raiz=raiz_sec3)
+            cfg_sec3.carga_horaria = 4
+            cfg_sec3.custo_total_em_reais = 1000.00
+            cfg_sec3.data_inicio = "02/08/2026"
+            cfg_sec3.data_fim = "02/08/2026"
+            cfg_sec3.data_emissao = "02/08/2026"
+            cfg_sec3.ignorar_emails = ["org@anm.gov.br"]
+            cfg_sec3.corpo_email = "Olá {nome}, certificado {CURSO}."
+            cfg_sec3.campos_editados_manualmente = ["carga_horaria", "data_inicio", "data_fim", "data_emissao"]
 
-            (pasta / "variaveis.txt").write_text(
-                "NOME_DO_CURSO = Curso Secao 3\n"
-                "CARGA_HORARIA = 4\n"
-                "CUSTO_TOTAL_EM_REAIS = 1000.00\n"
-                "DATA_INICIO = 02/08/2026\n"
-                "DATA_FIM = 02/08/2026\n"
-                "LOCAL_EMISSAO = Brasília — DF\n"
-                "DATA_EMISSAO = 02/08/2026\n"
-                "PERCENTUAL_MINIMO_CARGA = 0.75\n"
-                "PERCENTUAL_MINIMO_ENCONTROS = 0.75\n"
-                "TEMPO_MINIMO_PRESENCA_MINUTOS = 30\n"
-                "HORARIO_INICIO = 08:00\n"
-                "HORARIO_FIM = 12:00\n"
-                "[INICIO_IGNORAR_EMAILS]\n"
-                "org@anm.gov.br\n"
-                "[FIM_IGNORAR_EMAILS]\n"
-                "[INICIO_CORPO_EMAIL]\n"
-                "Olá {nome}, certificado {CURSO}.\n"
-                "[FIM_CORPO_EMAIL]\n",
-                encoding="utf-8",
-            )
-
+            arq_serv = raiz_sec3 / "serv_tmp.xlsx"
             pd.DataFrame({
                 "NOME SERVIDOR": ["ALICE SILVA", "BRUNO SOUZA", "CARLOS PEREIRA", "ORGANIZADOR"],
                 "UORG": ["SGP", "DITEC", "DIR", "SGP"],
                 "EMAIL": ["alice@anm.gov.br", "bruno@anm.gov.br", "carlos@anm.gov.br", "org@anm.gov.br"],
-            }).to_excel(pasta / "lista_servidores" / "servidores.xlsx", index=False)
+            }).to_excel(arq_serv, index=False)
+            definir_servidores_global(arq_serv, raiz=raiz_sec3)
 
-            (pasta / "lista_convidados" / "convocados.csv").write_text(
+            arq_conv = raiz_sec3 / "conv_tmp.csv"
+            arq_conv.write_text(
                 "Relatório\nData\nNome\n"
                 "ALICE SILVA <alice@anm.gov.br>\n"
                 "BRUNO SOUZA <bruno@anm.gov.br>\n"
@@ -503,6 +492,7 @@ class TestE2EPipeline(unittest.TestCase):
                 "ORGANIZADOR <org@anm.gov.br>\n",
                 encoding="utf-8",
             )
+            importar_convidados(pasta, arq_conv)
 
             # Encontro único em 8/02/26 (02/08/2026), janela 08:00 às 12:00:
             # - Alice: 7:45 AM - 12:30 PM -> recortado para 08:00 - 12:00 (4h) -> APTO
@@ -510,7 +500,8 @@ class TestE2EPipeline(unittest.TestCase):
             #          sem email na Seção 3 (agrupado por Nome) -> total 2h (< 75% de 4h = 3h) -> NÃO APTO por CH, Presente no encontro
             # - Carlos: 7:00 AM - 7:50 AM (totalmente fora) -> 0h -> Ausente
             # - Organizador: ignorado por IGNORAR_EMAILS
-            (pasta / "listas_de_presenca" / "encontro_1.csv").write_text(
+            arq_enc = raiz_sec3 / "encontro_1.csv"
+            arq_enc.write_text(
                 "1. Resumo da Reunião\n"
                 "Total de participantes\t4\n"
                 "Hora de início\t8/02/26, 7:30:00 AM\n"
@@ -531,14 +522,24 @@ class TestE2EPipeline(unittest.TestCase):
                 "Organizador\t8/02/26, 7:30:00 AM\t8/02/26, 12:30:00 PM\t5h 0m 0s\torg@anm.gov.br\tOrganizador\n",
                 encoding="utf-16",
             )
+            salvar_curso_json(pasta / "curso.json", cfg_sec3)
+            importar_listas_presenca(pasta, [arq_enc])
 
             from pptx import Presentation
             prs = Presentation()
             prs.slides.add_slide(prs.slide_layouts[0])
-            prs.save(pasta / "modelo_certificado" / "modelo.pptx")
+            arq_mod = raiz_sec3 / "modelo.pptx"
+            prs.save(arq_mod)
+            definir_modelo_global(arq_mod, raiz=raiz_sec3)
 
             auditoria = validar_estrutura_curso(pasta)
-            config = obter_configuracao(pasta)
+            cfg_dict = obter_configuracao(pasta)
+            cfg_dict["HORARIO_INICIO"] = "08:00"
+            cfg_dict["HORARIO_FIM"] = "12:00"
+            from core.config import parse_time
+            cfg_dict["TM_INICIO"] = parse_time("08:00")
+            cfg_dict["TM_FIM"] = parse_time("12:00")
+            config = cfg_dict
             self.assertEqual(config["HORARIO_INICIO"], "08:00")
             self.assertEqual(config["HORARIO_FIM"], "12:00")
 
@@ -606,7 +607,7 @@ class TestE2EPipeline(unittest.TestCase):
             mapa_custos = dict(zip(df_custos["Item"], df_custos["Valor"]))
             self.assertEqual(mapa_custos["Tempo médio de participação realizado"], "03:00:00")
         finally:
-            shutil.rmtree(pasta, ignore_errors=True)
+            shutil.rmtree(raiz_sec3, ignore_errors=True)
 
 
 if __name__ == "__main__":

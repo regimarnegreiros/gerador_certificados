@@ -3418,11 +3418,11 @@ def gerar_relatorio(
     if config is None:
         candidatos_var = []
         if len(caminho_saida_excel.parents) > 2:
-            candidatos_var.append(caminho_saida_excel.parents[2] / "variaveis.txt")
+            candidatos_var.append(caminho_saida_excel.parents[2] / "curso.json")
         if len(caminho_convocados.parents) > 1:
-            candidatos_var.append(caminho_convocados.parents[1] / "variaveis.txt")
-        candidatos_var.append(caminho_convocados.parent / "variaveis.txt")
-        candidatos_var.append(Path.cwd() / "variaveis.txt")
+            candidatos_var.append(caminho_convocados.parents[1] / "curso.json")
+        candidatos_var.append(caminho_convocados.parent / "curso.json")
+        candidatos_var.append(Path.cwd() / "curso.json")
 
         for cand in candidatos_var:
             if cand and existe_com_fallback(cand):
@@ -3432,8 +3432,9 @@ def gerar_relatorio(
                     break
                 except Exception:
                     try:
-                        from core.config import carregar_variaveis
-                        config = carregar_variaveis(cand)
+                        from core.config import carregar_curso_json, validar_curso_config
+                        cfg_obj = carregar_curso_json(cand)
+                        config = validar_curso_config(cfg_obj)
                         break
                     except Exception:
                         pass
