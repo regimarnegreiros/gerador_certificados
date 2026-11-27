@@ -37,9 +37,13 @@ from core.cursos_repo import (
     obter_status_recursos_globais,
 )
 from gui.tabs.tab_arquivos import TabArquivosWidget
+from gui.tabs.tab_certificados import TabCertificadosWidget
 from gui.tabs.tab_config import TabConfigWidget
+from gui.tabs.tab_emails import TabEmailsWidget
+from gui.tabs.tab_relatorio import TabRelatorioWidget
 from gui.widgets.drop_zone import DropZoneWidget
 from gui.widgets.log_panel import LogPanelWidget
+from gui.workers import BaseTaskWorker
 
 
 class MainWindow(QMainWindow):
@@ -52,6 +56,7 @@ class MainWindow(QMainWindow):
         self.curso_atual_pasta: Optional[Path] = None
         self.curso_atual_cfg: Optional[CursoConfig] = None
         self._cursos_cache: List[Dict[str, Any]] = []
+        self._worker_ativo: Optional[BaseTaskWorker] = None
 
         self.setWindowTitle("Gerador de Certificados — ANM (DIVCAM / SGP)")
         self.resize(1180, 740)
@@ -78,7 +83,8 @@ class MainWindow(QMainWindow):
         corpo.setContentsMargins(0, 0, 0, 0)
         corpo.setSpacing(0)
 
-        corpo.addWidget(self._criar_sidebar())
+        self.sidebar = self._criar_sidebar()
+        corpo.addWidget(self.sidebar)
         corpo.addWidget(self._criar_area_conteudo(), 1)
 
         root_layout.addLayout(corpo, 1)
@@ -178,6 +184,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         self.log_panel = LogPanelWidget()
+        self.log_panel.cancelar_solicitado.connect(self._solicitar_cancelamento_worker)
 
         self.stack_conteudo = QStackedWidget()
         self.pagina_vazia = self._criar_pagina_vazia()
@@ -261,18 +268,19 @@ class MainWindow(QMainWindow):
         self.tab_config.log_solicitado.connect(self.log_panel.registrar_log)
         self.tab_config.avancar_solicitado.connect(lambda: self.tabs.setCurrentIndex(2))
 
-        self.tab_relatorio = self._criar_aba_placeholder(
-            "3. Relatório e Justificativas",
-            "Aqui será gerado o relatório Excel e exibida a matriz interativa para justificar faltas pela interface. (Etapa 7)",
-        )
-        self.tab_certificados = self._criar_aba_placeholder(
-            "4. Certificados",
-            "Aqui será feita a conferência final de aptos e geração/junção de certificados em PowerPoint e PDF. (Etapa 7)",
-        )
-        self.tab_emails = self._criar_aba_placeholder(
-            "5. Envio de E-mails",
-            "Aqui serão realizados o teste no Outlook e o disparo em lote para os participantes aptos. (Etapa 7)",
-        )
+        self.tab_relatorio = TabRelatorioWidget(self._executar_worker, self.raiz_dados)
+        self.tab_relatorio.curso_atualizado.connect(self._ao_curso_modificado_na_aba)
+        self.tab_relatorio.relatorio_atualizado.connect(self._ao_relatorio_atualizado)
+        self.tab_relatorio.log_solicitado.connect(self.log_panel.registrar_log)
+        self.tab_relatorio.avancar_solicitado.connect(lambda: self.tabs.setCurrentIndex(3))
+
+        self.tab_certificados = TabCertificadosWidget(self._executar_worker, self.raiz_dados)
+        self.tab_certificados.certificados_atualizados.connect(self._ao_certificados_atualizados)
+        self.tab_certificados.log_solicitado.connect(self.log_panel.registrar_log)
+        self.tab_certificados.avancar_solicitado.connect(lambda: self.tabs.setCurrentIndex(4))
+
+        self.tab_emails = TabEmailsWidget(self._executar_worker)
+        self.tab_emails.log_solicitado.connect(self.log_panel.registrar_log)
 
         self.tabs.addTab(self.tab_arquivos, "1. Arquivos e Horários")
         self.tabs.addTab(self.tab_config, "2. Dados e E-mail")
@@ -282,20 +290,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.tabs, 1)
         return pag
-
-    def _criar_aba_placeholder(self, titulo: str, descricao: str) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        lbl_t = QLabel(titulo)
-        lbl_t.setProperty("class", "SectionHeader")
-        lbl_d = QLabel(descricao)
-        lbl_d.setWordWrap(True)
-        lbl_d.setProperty("class", "MutedText")
-        layout.addWidget(lbl_t)
-        layout.addWidget(lbl_d)
-        return w
 
     # ------------------------------------------------------------------
     # RECURSOS GLOBAIS
@@ -318,6 +312,9 @@ class MainWindow(QMainWindow):
         try:
             definir_servidores_global(caminhos[0], raiz=self.raiz_dados)
             self._atualizar_recursos_globais()
+            if self.curso_atual_pasta is not None:
+                self.tab_relatorio.atualizar_visao_relatorio()
+                self.tab_certificados.atualizar_dados()
             self.log_panel.registrar_log("sucesso", f"Lista global de servidores atualizada: {Path(caminhos[0]).name}")
         except Exception as exc:
             QMessageBox.warning(self, "Erro ao importar servidores", str(exc))
@@ -328,6 +325,9 @@ class MainWindow(QMainWindow):
         try:
             definir_modelo_global(caminhos[0], raiz=self.raiz_dados)
             self._atualizar_recursos_globais()
+            if self.curso_atual_pasta is not None:
+                self.tab_relatorio.atualizar_visao_relatorio()
+                self.tab_certificados.atualizar_dados()
             self.log_panel.registrar_log("sucesso", f"Modelo global de certificado atualizado: {Path(caminhos[0]).name}")
         except Exception as exc:
             QMessageBox.warning(self, "Erro ao importar modelo", str(exc))
@@ -429,6 +429,9 @@ class MainWindow(QMainWindow):
         self._atualizar_cabecalho_curso()
         self.tab_arquivos.carregar_curso(pasta, cfg)
         self.tab_config.carregar_curso(pasta, cfg)
+        self.tab_relatorio.carregar_curso(pasta, cfg)
+        self.tab_certificados.carregar_curso(pasta, cfg)
+        self.tab_emails.carregar_curso(pasta, cfg)
         self.stack_conteudo.setCurrentWidget(self.pagina_curso)
 
     def _ao_curso_modificado_na_aba(self, cfg_atualizado: CursoConfig) -> None:
@@ -442,7 +445,88 @@ class MainWindow(QMainWindow):
             self.tab_arquivos.carregar_curso(self.curso_atual_pasta, cfg_atualizado)
         if sender is not self.tab_config:
             self.tab_config.carregar_curso(self.curso_atual_pasta, cfg_atualizado)
+        if sender is not self.tab_relatorio:
+            self.tab_relatorio.carregar_curso(self.curso_atual_pasta, cfg_atualizado)
+        if sender is not self.tab_certificados:
+            self.tab_certificados.carregar_curso(self.curso_atual_pasta, cfg_atualizado)
+        if sender is not self.tab_emails:
+            self.tab_emails.carregar_curso(self.curso_atual_pasta, cfg_atualizado)
         self._atualizar_sidebar_sem_recarregar_abas()
+
+    def _ao_relatorio_atualizado(self) -> None:
+        """Atualiza abas dependentes e badge na barra lateral após gerar relatório Excel."""
+        self.tab_certificados.atualizar_dados()
+        self.tab_emails.atualizar_dados()
+        self._atualizar_sidebar_sem_recarregar_abas()
+
+    def _ao_certificados_atualizados(self) -> None:
+        """Atualiza aba de e-mails e badge na barra lateral após gerar/juntar certificados."""
+        self.tab_emails.atualizar_dados()
+        self._atualizar_sidebar_sem_recarregar_abas()
+
+    # ------------------------------------------------------------------
+    # EXECUÇÃO ASSÍNCRONA DE TAREFAS (WORKERS QTHREAD)
+    # ------------------------------------------------------------------
+    def _solicitar_cancelamento_worker(self) -> None:
+        if self._worker_ativo is not None and self._worker_ativo.isRunning():
+            self._worker_ativo.solicitar_cancelamento()
+            self.log_panel.btn_cancelar.setEnabled(False)
+            self.log_panel.lbl_status.setText("Cancelamento solicitado — aguardando conclusão da etapa atual...")
+
+    def _executar_worker(
+        self,
+        worker: BaseTaskWorker,
+        titulo_inicio: str,
+        titulo_fim: str,
+        cancelavel: bool = True,
+        ao_concluir=None,
+    ) -> None:
+        """Executa um BaseTaskWorker mantendo a UI responsiva e conectada ao LogPanelWidget."""
+        if self._worker_ativo is not None and self._worker_ativo.isRunning():
+            QMessageBox.information(
+                self,
+                "Tarefa em andamento",
+                "Aguarde a conclusão ou cancele a tarefa atual antes de iniciar outra operação.",
+            )
+            return
+
+        self._worker_ativo = worker
+        self.sidebar.setEnabled(False)
+        self.tabs.setEnabled(False)
+        self.log_panel.iniciar_tarefa(titulo_inicio, cancelavel=cancelavel)
+
+        estado: Dict[str, Any] = {"resultado": None, "erro": None}
+
+        worker.log_emitido.connect(self.log_panel.registrar_log)
+        worker.progresso_atualizado.connect(self.log_panel.atualizar_progresso)
+        worker.concluido.connect(lambda res: estado.__setitem__("resultado", res))
+        worker.erro_ocorrido.connect(lambda msg: estado.__setitem__("erro", msg))
+
+        def _finalizar_worker() -> None:
+            if worker.isRunning():
+                worker.wait(1000)
+            self._worker_ativo = None
+            self.sidebar.setEnabled(True)
+            self.tabs.setEnabled(True)
+
+            if estado["erro"] is not None:
+                msg_erro = str(estado["erro"])
+                self.log_panel.registrar_log("erro", msg_erro)
+                self.log_panel.finalizar_tarefa("Falha na execução da tarefa.", erro=True)
+                QMessageBox.critical(self, "Erro na execução", msg_erro)
+            else:
+                if ao_concluir is not None:
+                    try:
+                        ao_concluir(estado["resultado"])
+                    except Exception as exc:
+                        self.log_panel.registrar_log("erro", f"Erro ao atualizar interface: {exc}")
+                msg_fim = "Operação cancelada pelo usuário." if worker.cancel_event.is_set() else titulo_fim
+                self.log_panel.finalizar_tarefa(msg_fim, erro=False)
+
+            worker.deleteLater()
+
+        worker.finished.connect(_finalizar_worker)
+        worker.start()
 
     def _atualizar_sidebar_sem_recarregar_abas(self) -> None:
         self._cursos_cache = listar_cursos(raiz=self.raiz_dados)
@@ -526,3 +610,19 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Erro ao excluir curso", str(exc))
             return False
+
+    def closeEvent(self, event) -> None:
+        if self._worker_ativo is not None and self._worker_ativo.isRunning():
+            resp = QMessageBox.question(
+                self,
+                "Tarefa em andamento",
+                "Há uma operação em andamento. Deseja cancelar e fechar o aplicativo?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self._worker_ativo.solicitar_cancelamento()
+            self._worker_ativo.wait(3000)
+        super().closeEvent(event)

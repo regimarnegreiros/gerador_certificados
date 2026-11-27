@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import time
 import unittest
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_OPENGL", "software")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -264,6 +266,239 @@ class TestGuiBase(unittest.TestCase):
         self.assertEqual(tbl.rowCount(), 1)
         self.assertEqual(janela.tab_config.spin_carga_horaria.value(), 4.5)
         self.assertEqual(janela.tab_config.txt_data_inicio.text(), "11/08/2026")
+
+        janela.close()
+
+    def _aguardar_worker(self, janela: MainWindow, timeout_ms: int = 15000) -> None:
+        deadline = time.monotonic() + (timeout_ms / 1000.0)
+        while time.monotonic() < deadline:
+            self.app.processEvents()
+            w = janela._worker_ativo
+            if w is None:
+                self.app.processEvents()
+                return
+            if w.isRunning():
+                w.wait(50)
+            else:
+                self.app.processEvents()
+                time.sleep(0.01)
+        self.fail("Timeout aguardando conclusão de worker na MainWindow.")
+
+    def test_dialog_justificativa_validacao_e_remocao(self):
+        from PySide6.QtWidgets import QDialog
+        from gui.tabs.tab_relatorio import _DialogJustificativa
+
+        dlg = _DialogJustificativa(
+            nome_participante="BRUNO SOUZA",
+            titulo_encontro="Encontro 2 (11/08/2026)",
+            tempo_sugerido_seg=4 * 3600,
+            motivo_atual="",
+            ja_justificado=False,
+        )
+        self.assertEqual(dlg.txt_tempo.text(), "4:00:00")
+        dlg.txt_tempo.setText("03:30:00")
+        dlg.txt_motivo.setText("Missão institucional")
+        dlg._ao_confirmar()
+        self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
+        self.assertFalse(dlg.remover_solicitado)
+        self.assertEqual(dlg.obter_tempo_segundos(), 3 * 3600 + 30 * 60)
+        self.assertEqual(dlg.obter_motivo(), "Missão institucional")
+
+        dlg_rem = _DialogJustificativa(
+            nome_participante="BRUNO SOUZA",
+            titulo_encontro="Encontro 2",
+            tempo_sugerido_seg=3600,
+            motivo_atual="Anterior",
+            ja_justificado=True,
+        )
+        dlg_rem._ao_remover()
+        self.assertTrue(dlg_rem.remover_solicitado)
+        self.assertEqual(dlg_rem.result(), QDialog.DialogCode.Accepted)
+
+    def test_etapa7_fluxo_completo_relatorio_justificativa_certificados_e_emails(self):
+        from pypdf import PdfWriter
+        from pptx import Presentation
+        from pptx.util import Inches
+        from PySide6.QtWidgets import QDialog, QMessageBox
+        import core.certificados as cert_mod
+        from core.cursos_repo import obter_curso
+        import core.emails as email_mod
+        from gui.tabs.tab_relatorio import _DialogJustificativa
+
+        raiz = self.temp_dir / "raiz_etapa7"
+        staging = self.temp_dir / "staging_etapa7"
+        staging.mkdir()
+
+        # Prepara recursos globais: servidores.xlsx e modelo.pptx
+        arq_serv = staging / "servidores.xlsx"
+        pd.DataFrame({
+            "NOME SERVIDOR": ["ALICE SILVA", "BRUNO SOUZA"],
+            "UORG": ["SGP", "DITEC"],
+            "EMAIL": ["alice@anm.gov.br", "bruno@anm.gov.br"],
+        }).to_excel(arq_serv, index=False)
+
+        arq_modelo = staging / "modelo_anm.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1))
+        tb.text_frame.text = "Certificado <<NOME>> - <<CURSO>>"
+        prs.save(arq_modelo)
+
+        janela = MainWindow(raiz_dados=raiz)
+        self.assertEqual(janela.tabs.count(), 5)
+
+        janela._ao_definir_servidores_global([str(arq_serv)])
+        janela._ao_definir_modelo_global([str(arq_modelo)])
+
+        id_curso = janela.acao_novo_curso("Treinamento Segurança de Barragens")
+        self.assertIsNotNone(id_curso)
+
+        # Importa convidados + 2 presenças (Alice presente nos 2 dias, Bruno ausente no dia 2)
+        arq_conv = staging / "convocados.csv"
+        arq_conv.write_text(
+            "Relatório\nData\nNome\n"
+            "ALICE SILVA <alice@anm.gov.br>\n"
+            "BRUNO SOUZA <bruno@anm.gov.br>\n",
+            encoding="utf-8",
+        )
+        janela.tab_arquivos._ao_importar_convidados([str(arq_conv)])
+
+        arq_d1 = staging / "dia_1.csv"
+        arq_d1.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/10/26, 8:00:00 AM\n"
+            "Hora de término\t8/10/26, 12:00:00 PM\n"
+            "Duração da reunião\t4h 0m 0s\n"
+            "Tempo médio de participação\t4h 0m 0s\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n"
+            "Alice Silva\talice@anm.gov.br\t4h 0m 0s\n"
+            "Bruno Souza\tbruno@anm.gov.br\t4h 0m 0s\n",
+            encoding="utf-16",
+        )
+        arq_d2 = staging / "dia_2.csv"
+        arq_d2.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/11/26, 8:00:00 AM\n"
+            "Hora de término\t8/11/26, 12:00:00 PM\n"
+            "Duração da reunião\t4h 0m 0s\n"
+            "Tempo médio de participação\t4h 0m 0s\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n"
+            "Alice Silva\talice@anm.gov.br\t4h 0m 0s\n",
+            encoding="utf-16",
+        )
+        janela.tab_arquivos._ao_importar_presencas([str(arq_d1), str(arq_d2)])
+
+        # 1. Aba 3: Gera relatório inicial (Alice APTO, Bruno Ausente dia 2 / NÃO APTO)
+        janela.tab_relatorio.acao_gerar_relatorio()
+        with patch.object(QMessageBox, "critical", side_effect=lambda _p, t, m: self.fail(f"CRIT: {t}: {m}")), \
+             patch.object(QMessageBox, "warning", side_effect=lambda _p, t, m: self.fail(f"WARN: {t}: {m}")):
+            self._aguardar_worker(janela)
+
+            self.assertTrue(janela.tab_relatorio.btn_abrir_excel.isEnabled())
+            self.assertIn("Aptos: 1", janela.tab_relatorio.lbl_resumo.text())
+            self.assertIn("Não aptos: 1", janela.tab_relatorio.lbl_resumo.text())
+
+            tbl_m = janela.tab_relatorio.tabela_matriz
+            self.assertEqual(tbl_m.rowCount(), 2)
+            self.assertEqual(tbl_m.item(0, 0).text(), "ALICE SILVA")
+            self.assertIn("APTO", tbl_m.item(0, 7).text())
+            self.assertEqual(tbl_m.item(1, 0).text(), "BRUNO SOUZA")
+            self.assertIn("Ausente", tbl_m.item(1, 3).text())
+            self.assertIn("NÃO APTO", tbl_m.item(1, 7).text())
+
+            # Aba 4 já recebeu atualização automática (somente Alice apta)
+            self.assertEqual(janela.tab_certificados.tabela.rowCount(), 1)
+            self.assertEqual(janela.tab_certificados.tabela.item(0, 0).text(), "ALICE SILVA")
+
+            # 2. Aba 3: Justifica falta do Bruno no encontro 2 via duplo clique simulando diálogo
+            def _fake_exec_just(dlg_self):
+                dlg_self.txt_motivo.setText("Atestado médico")
+                dlg_self._ao_confirmar()
+                return dlg_self.result()
+
+            with patch.object(_DialogJustificativa, "exec", _fake_exec_just):
+                janela.tab_relatorio.tabela_matriz.setCurrentCell(1, 3)
+                janela.tab_relatorio._ao_clicar_justificar()
+                self._aguardar_worker(janela)
+
+            _, cfg_just = obter_curso(id_curso, raiz=raiz)
+            self.assertEqual(len(cfg_just.justificativas), 1)
+            self.assertEqual(cfg_just.justificativas[0].arquivo_encontro, "dia_2.csv")
+            self.assertEqual(cfg_just.justificativas[0].tempo_abonado_segundos, 4 * 3600)
+
+            self.assertIn("Aptos: 2", janela.tab_relatorio.lbl_resumo.text())
+            self.assertIn("Justificado", tbl_m.item(1, 3).text())
+            self.assertIn("APTO", tbl_m.item(1, 7).text())
+            self.assertEqual(janela.tab_certificados.tabela.rowCount(), 2)
+
+            # 3. Aba 4: Gera certificados (Modo completo com mock COM PowerPoint + pypdf real)
+            def _fake_gerar_pdf_pessoa(linha, **kwargs):
+                out = Path(kwargs["pasta_pdf"]) / f"CERT_{cert_mod.nome_seguro_arquivo(linha['Nome'])}.pdf"
+                out.parent.mkdir(parents=True, exist_ok=True)
+                wr = PdfWriter()
+                wr.add_blank_page(width=200, height=140)
+                with open(out, "wb") as f:
+                    wr.write(f)
+                return out
+
+            fake_ppt = MagicMock()
+            fake_pres = MagicMock()
+            fake_pres.Slides.Count = 1
+
+            def _fake_save_as(caminho_dest, _fmt=24):
+                p = Presentation()
+                p.slides.add_slide(p.slide_layouts[6])
+                p.save(caminho_dest)
+
+            fake_pres.SaveAs.side_effect = _fake_save_as
+            fake_ppt.Presentations.Open.return_value = fake_pres
+
+            with patch.object(cert_mod.win32, "Dispatch", return_value=fake_ppt), \
+                 patch.object(cert_mod, "gerar_pdf_pessoa", side_effect=_fake_gerar_pdf_pessoa):
+                janela.tab_certificados.rb_completo.setChecked(True)
+                janela.tab_certificados.acao_executar()
+                self._aguardar_worker(janela)
+
+            self.assertTrue(janela.tab_certificados.btn_abrir_pdf.isEnabled())
+            self.assertTrue(janela.tab_certificados.btn_abrir_ppt.isEnabled())
+            self.assertTrue(janela.tab_certificados._caminho_pdf_junto.exists())
+            self.assertTrue(janela.tab_certificados._caminho_ppt_junto.exists())
+
+            # 4. Aba 5: Teste Outlook + Disparo em Lote com mock COM Outlook
+            self.assertEqual(janela.tab_emails.cmb_participante_teste.count(), 2)
+            self.assertTrue(janela.tab_emails.btn_enviar_todos.isEnabled())
+            self.assertTrue(janela.tab_emails.btn_teste_outlook.isEnabled())
+
+            fake_outlook = MagicMock()
+            fake_mail_itens = []
+
+            def _criar_item(_tipo):
+                m = MagicMock()
+                fake_mail_itens.append(m)
+                return m
+
+            fake_outlook.CreateItem.side_effect = _criar_item
+
+            with patch.object(email_mod, "conectar_outlook", return_value=fake_outlook):
+                janela.tab_emails.acao_teste_outlook()
+                self._aguardar_worker(janela)
+                self.assertEqual(len(fake_mail_itens), 1)
+                fake_mail_itens[0].Display.assert_called_once()
+
+                with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                    janela.tab_emails.acao_enviar_todos()
+                    self._aguardar_worker(janela)
+
+            # 1 teste Display + 2 envios em lote
+            self.assertEqual(len(fake_mail_itens), 3)
+            fake_mail_itens[1].Send.assert_called_once()
+            fake_mail_itens[2].Send.assert_called_once()
+            self.assertEqual(janela.tab_emails.tabela_envio.rowCount(), 2)
+            self.assertEqual(janela.tab_emails.tabela_envio.item(0, 2).text(), "ENVIADO")
+            self.assertEqual(janela.tab_emails.tabela_envio.item(1, 2).text(), "ENVIADO")
+            self.assertTrue(janela.tab_emails.btn_abrir_log.isEnabled())
 
         janela.close()
 
