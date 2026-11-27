@@ -60,7 +60,9 @@ from core.presenca import (
     sanitizar_nome_arquivo,
     localizar_coluna_uorg,
     juntar_servidor_presenca,
-    calcular_dias_minimos,
+    aplicar_justificativas,
+    carregar_matriz_presencas,
+    gerar_relatorio,
     calcular_encontros_minimos,
     criar_dados_do_encontro,
     adicionar_encontros_presenca,
@@ -154,10 +156,9 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(sanitizar_nome_arquivo(":::"), "arquivo")
         self.assertEqual(sanitizar_nome_arquivo(""), "arquivo")
 
-    def test_calcular_dias_minimos(self):
+    def test_calcular_encontros_minimos(self):
         # Curso de 1 encontro com 75% deve exigir 1 encontro de presença (não 0!)
         self.assertEqual(calcular_encontros_minimos(1, 0.75), 1)
-        self.assertEqual(calcular_dias_minimos(1, 0.75), 1)
         # Curso de 2 encontros com 75% exige 2 encontros (1.5 arredonda para cima)
         self.assertEqual(calcular_encontros_minimos(2, 0.75), 2)
         # Curso de 4 encontros com 75% exige 3 encontros
@@ -167,7 +168,7 @@ class TestGeradorCertificados(unittest.TestCase):
         # Sem exigência de presença
         self.assertEqual(calcular_encontros_minimos(1, 0.0), 0)
 
-    def test_aptidao_por_dias_curso_um_dia(self):
+    def test_aptidao_encontros_curso_um_dia(self):
         # Simula relatório com 1 encontro de curso:
         # Pessoa A esteve presente (Presenças = 1)
         # Pessoa B esteve ausente (Presenças = 0)
@@ -179,10 +180,10 @@ class TestGeradorCertificados(unittest.TestCase):
         resultado = adicionar_aptidao(
             relatorio=df_simulado,
             carga_segundos=carga_segundos,
-            quantidade_dias=1,
+            quantidade_encontros=1,
             carga_horaria_horas=2.0,
             percentual_minimo_carga=0.75,
-            percentual_minimo_dias=0.75,
+            percentual_minimo_encontros=0.75,
         )
 
         apto_a = resultado[resultado["Nome"] == "Pessoa A"].iloc[0]
@@ -191,13 +192,11 @@ class TestGeradorCertificados(unittest.TestCase):
         # Pessoa A esteve presente no único encontro -> APTO
         self.assertEqual(apto_a["Apto por Presença"], "APTO")
         self.assertEqual(apto_a["Apto por Encontros"], "APTO")
-        self.assertEqual(apto_a["Apto por Dias"], "APTO")
         self.assertEqual(apto_a["Apto em Ambos"], "APTO")
 
         # Pessoa B NÃO esteve presente -> NÃO APTO
         self.assertEqual(apto_b["Apto por Presença"], "NÃO APTO")
         self.assertEqual(apto_b["Apto por Encontros"], "NÃO APTO")
-        self.assertEqual(apto_b["Apto por Dias"], "NÃO APTO")
         self.assertEqual(apto_b["Apto em Ambos"], "NÃO APTO")
 
     def test_colunas_encontros_e_organizar_colunas(self):
@@ -1964,6 +1963,149 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertEqual(len(df_ativ), 1)
         df_proc = processar_atividades_reuniao(df_ativ, horario_inicio="08:00", horario_fim="12:00")
         self.assertEqual(df_proc.iloc[0]["Duração da Reunião"], "01:30:00")
+
+    def test_ler_resumo_reuniao_hora_termino_e_ampm(self):
+        arq = self.temp_dir / "resumo_termino.csv"
+        arq.write_text(
+            "1. Resumo da Reunião\n"
+            "Total de participantes\t10\n"
+            "Hora de início\t8/02/26, 8:05:10 a.m.\n"
+            "Hora de término\t8/02/26, 12:10:00 p.m.\n"
+            "Duração da reunião\t4h 4m 50s\n"
+            "Tempo médio de participação\t3h 20m 0s\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n",
+            encoding="utf-16",
+        )
+        resumo = ler_resumo_reuniao(arq)
+        self.assertEqual(resumo["data"], "02/08/2026")
+        self.assertEqual(resumo["horario_inicio"], "08:05:10")
+        self.assertEqual(resumo["horario_fim"], "12:10")
+        self.assertEqual(resumo["tempo_medio_segundos"], 12000)
+
+    def test_horarios_individuais_justificativas_callbacks_e_matriz(self):
+        from core.config import obter_configuracao
+        from core.validator import validar_estrutura_curso
+
+        raiz = self.temp_dir / "raiz_just"
+        staging = self.temp_dir / "staging_just"
+        staging.mkdir(parents=True)
+
+        arq_serv = staging / "servidores.xlsx"
+        pd.DataFrame({
+            "NOME SERVIDOR": ["ALICE SILVA", "BRUNO SOUZA"],
+            "UORG": ["SGP", "DITEC"],
+            "EMAIL": ["alice@anm.gov.br", "bruno@anm.gov.br"],
+        }).to_excel(arq_serv, index=False)
+        definir_servidores_global(arq_serv, raiz=raiz)
+
+        from pptx import Presentation
+        arq_mod = staging / "modelo.pptx"
+        prs = Presentation()
+        prs.slides.add_slide(prs.slide_layouts[0])
+        prs.save(arq_mod)
+        definir_modelo_global(arq_mod, raiz=raiz)
+
+        pasta_curso, _ = criar_curso("Curso Horários Variáveis", raiz=raiz)
+        arq_conv = staging / "convidados.csv"
+        arq_conv.write_text(
+            "Relatório\nData\nNome\n"
+            "ALICE SILVA <alice@anm.gov.br>\n"
+            "BRUNO SOUZA <bruno@anm.gov.br>\n",
+            encoding="utf-8",
+        )
+        importar_convidados(pasta_curso, arq_conv)
+
+        # Encontro 1 (manhã: 08:00 - 12:00), Encontro 2 (tarde: 14:00 - 18:00)
+        enc1 = staging / "enc_1.csv"
+        enc1.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/10/26, 8:00:00 AM\n"
+            "Hora de término\t8/10/26, 12:00:00 PM\n"
+            "Duração da reunião\t4h 0m 0s\n"
+            "Tempo médio de participação\t4h 0m 0s\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n"
+            "Alice Silva\talice@anm.gov.br\t4h 0m 0s\n"
+            "Bruno Souza\tbruno@anm.gov.br\t4h 0m 0s\n"
+            "3. Atividades em Reunião\n"
+            "Nome\tHorário de entrada\tHorário de Saída\tDuração\tEmail\tFunção\n"
+            "Alice Silva\t8/10/26, 8:00:00 AM\t8/10/26, 12:00:00 PM\t4h 0m 0s\talice@anm.gov.br\tParticipante\n"
+            "Bruno Souza\t8/10/26, 8:00:00 AM\t8/10/26, 12:00:00 PM\t4h 0m 0s\tbruno@anm.gov.br\tParticipante\n",
+            encoding="utf-16",
+        )
+        enc2 = staging / "enc_2.csv"
+        enc2.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/11/26, 2:00:00 PM\n"
+            "Hora de término\t8/11/26, 6:00:00 PM\n"
+            "Duração da reunião\t4h 0m 0s\n"
+            "Tempo médio de participação\t4h 0m 0s\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n"
+            "Alice Silva\talice@anm.gov.br\t4h 0m 0s\n"
+            "3. Atividades em Reunião\n"
+            "Nome\tHorário de entrada\tHorário de Saída\tDuração\tEmail\tFunção\n"
+            "Alice Silva\t8/11/26, 2:00:00 PM\t8/11/26, 6:00:00 PM\t4h 0m 0s\talice@anm.gov.br\tParticipante\n",
+            encoding="utf-16",
+        )
+        importar_listas_presenca(pasta_curso, [enc1, enc2])
+
+        # Bruno faltou no Encontro 2 -> inicialmente NÃO APTO; após justificativa -> APTO
+        salvar_justificativa(
+            pasta_curso,
+            nome="BRUNO SOUZA",
+            email="bruno@anm.gov.br",
+            arquivo_encontro="enc_2.csv",
+            tempo_abonado_segundos=14400,
+            motivo="Missão institucional",
+        )
+
+        auditoria = validar_estrutura_curso(pasta_curso)
+        config = obter_configuracao(pasta_curso)
+        logs = []
+        progressos = []
+
+        saida_excel = pasta_curso / "saida" / "relatorio_presencas" / "Relatorio_Just.xlsx"
+        df_cert = gerar_relatorio(
+            caminho_servidores=auditoria["arquivos"]["servidores"],
+            caminho_convocados=auditoria["arquivos"]["convidados"],
+            arquivos_presenca=auditoria["arquivos"]["presencas"],
+            caminho_saida_excel=saida_excel,
+            carga_horaria_horas=config["CARGA_HORARIA"],
+            tempo_comparecimento_minutos=config["TEMPO_MINIMO_PRESENCA_MINUTOS"],
+            percentual_minimo_carga=config["PERCENTUAL_MINIMO_CARGA"],
+            percentual_minimo_encontros=config["PERCENTUAL_MINIMO_ENCONTROS"],
+            config=config,
+            on_log=lambda nivel, msg: logs.append((nivel, msg)),
+            on_progress=lambda a, t, d: progressos.append((a, t, d)),
+        )
+
+        self.assertGreater(len(logs), 0)
+        self.assertGreater(len(progressos), 0)
+        self.assertEqual(progressos[-1][0], progressos[-1][1])
+
+        # Ambos aptos na leitura sem abrir Excel
+        df_lido = carregar_relatorio_presenca(saida_excel)
+        bruno_lido = df_lido[df_lido["Nome"] == "BRUNO SOUZA"].iloc[0]
+        self.assertEqual(bruno_lido["Presenças"], 2)
+        self.assertEqual(bruno_lido["Apto por CH"], "APTO")
+        self.assertEqual(bruno_lido["Apto em Ambos"], "APTO")
+
+        # Matriz interativa para GUI
+        matriz = carregar_matriz_presencas(saida_excel)
+        self.assertEqual(len(matriz["titulos_encontros"]), 2)
+        bruno_m = next(p for p in matriz["participantes"] if p["nome"] == "BRUNO SOUZA")
+        self.assertEqual(bruno_m["encontros"][0]["status"], "Presente")
+        self.assertEqual(bruno_m["encontros"][1]["status"], "Justificado")
+        self.assertEqual(bruno_m["encontros"][1]["duracao"], "04:00:00")
+
+        # Aba Informações do Curso preserva 11 linhas e indica horários variáveis
+        df_info = pd.read_excel(saida_excel, sheet_name="Informações do Curso")
+        self.assertEqual(len(df_info), 11)
+        mapa_info = dict(zip(df_info["Item"], df_info["Configuração"]))
+        self.assertEqual(mapa_info["Horário de Início"], "Variável por encontro")
+        self.assertEqual(mapa_info["Horário de Fim"], "Variável por encontro")
 
 
 if __name__ == "__main__":

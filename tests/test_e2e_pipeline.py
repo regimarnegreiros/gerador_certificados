@@ -524,6 +524,8 @@ class TestE2EPipeline(unittest.TestCase):
             )
             salvar_curso_json(pasta / "curso.json", cfg_sec3)
             importar_listas_presenca(pasta, [arq_enc])
+            from core.cursos_repo import atualizar_horario_encontro
+            atualizar_horario_encontro(pasta, "encontro_1.csv", "08:00", "12:00")
 
             from pptx import Presentation
             prs = Presentation()
@@ -533,15 +535,9 @@ class TestE2EPipeline(unittest.TestCase):
             definir_modelo_global(arq_mod, raiz=raiz_sec3)
 
             auditoria = validar_estrutura_curso(pasta)
-            cfg_dict = obter_configuracao(pasta)
-            cfg_dict["HORARIO_INICIO"] = "08:00"
-            cfg_dict["HORARIO_FIM"] = "12:00"
-            from core.config import parse_time
-            cfg_dict["TM_INICIO"] = parse_time("08:00")
-            cfg_dict["TM_FIM"] = parse_time("12:00")
-            config = cfg_dict
-            self.assertEqual(config["HORARIO_INICIO"], "08:00")
-            self.assertEqual(config["HORARIO_FIM"], "12:00")
+            config = obter_configuracao(pasta)
+            self.assertEqual(config["ENCONTROS"][0]["horario_inicio"], "08:00")
+            self.assertEqual(config["ENCONTROS"][0]["horario_fim"], "12:00")
 
             saida_excel = pasta / "saida" / "relatorio_presencas" / "Relatorio_Secao3.xlsx"
             df_cert = gerar_relatorio(

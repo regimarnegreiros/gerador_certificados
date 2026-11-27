@@ -3,11 +3,8 @@ Repositório central de cursos, recursos globais compartilhados, pré-leitura de
 para autopreenchimento e gerenciamento de justificativas de faltas.
 """
 
-import csv
 from datetime import datetime
-import io
 from pathlib import Path
-import re
 import shutil
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -307,64 +304,6 @@ def excluir_curso(diretorio_curso: Path) -> None:
 # LEITURA RÁPIDA DE RESUMO, AUTOPREENCHIMENTO E GESTÃO DE ENTRADAS
 # ============================================================================
 
-def _extrair_hora_termino_resumo(arquivo: Path) -> str:
-    """Extrai o valor bruto do campo 'Hora de término' / 'Hora de fim' da Seção 1."""
-    from core.presenca import normalizar_texto
-
-    for enc in ("utf-16", "utf-8-sig", "utf-8", "latin1"):
-        try:
-            with abrir_arquivo(arquivo, mode="r", encoding=enc, errors="replace") as f:
-                linhas = f.readlines()
-        except Exception:
-            continue
-
-        if not linhas:
-            continue
-
-        for linha in linhas:
-            limpa = linha.strip().strip('"\'')
-            if not limpa:
-                continue
-            if limpa.lower().startswith("2. participantes") or "2. participantes" in limpa.lower():
-                break
-
-            partes = None
-            for sep in ("\t", ";", ","):
-                try:
-                    row = next(csv.reader(io.StringIO(limpa), delimiter=sep))
-                    if len(row) >= 2 and row[0].strip():
-                        partes = [row[0].strip(), row[1].strip()]
-                        break
-                except Exception:
-                    continue
-            if not partes:
-                continue
-
-            chave_norm = normalizar_texto(partes[0])
-            if "HORA DE TERMINO" in chave_norm or "HORA DO TERMINO" in chave_norm or "HORA DE FIM" in chave_norm or "HORA DO FIM" in chave_norm:
-                return partes[1].strip().strip('"\'')
-        break
-
-    return ""
-
-
-def _extrair_hora_de_texto_resumo(valor_raw: str) -> str:
-    from core.presenca import extrair_datetime_resumo
-
-    if not valor_raw:
-        return ""
-    dt = extrair_datetime_resumo(valor_raw)
-    if dt is not None:
-        return format_time_str(dt.time())
-    m = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)", valor_raw, re.IGNORECASE)
-    if m:
-        try:
-            return format_time_str(parse_time(m.group(1)))
-        except Exception:
-            pass
-    return ""
-
-
 def extrair_metadados_resumo_presenca(arquivo: Path) -> EncontroConfig:
     """
     Lê rapidamente a Seção '1. Resumo' de uma lista de presença do Teams
@@ -374,16 +313,14 @@ def extrair_metadados_resumo_presenca(arquivo: Path) -> EncontroConfig:
 
     resumo = ler_resumo_reuniao(arquivo)
     data_str = resumo.get("data", "") or ""
+    horario_inicio = resumo.get("horario_inicio", "") or ""
+    horario_fim = resumo.get("horario_fim", "") or ""
 
     hora_ini_raw = resumo.get("hora_inicio_raw", "") or ""
     if not data_str and hora_ini_raw:
         dt_ini = extrair_datetime_resumo(hora_ini_raw)
         if dt_ini is not None:
             data_str = dt_ini.strftime("%d/%m/%Y")
-
-    horario_inicio = _extrair_hora_de_texto_resumo(hora_ini_raw)
-    hora_fim_raw = resumo.get("hora_termino_raw", "") or _extrair_hora_termino_resumo(arquivo)
-    horario_fim = _extrair_hora_de_texto_resumo(hora_fim_raw)
 
     return EncontroConfig(
         arquivo=arquivo.name,

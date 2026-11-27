@@ -24,8 +24,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import CellIsRule
 import zipfile
 import xml.etree.ElementTree as ET
-from typing import Tuple, List, Dict, Any, Optional, Set, Collection, Union
-from core.config import parse_time
+from typing import Tuple, List, Dict, Any, Optional, Set, Collection, Union, Callable
+from core.config import format_time_str, parse_time
 from core.caminhos import (
     caminho_estendido,
     caminho_estendido_path,
@@ -181,6 +181,25 @@ def converter_para_inteiro(val: Any) -> int:
         return 0
 
 
+def _emitir_log(
+    on_log: Optional[Callable[[str, str], None]],
+    nivel: str,
+    mensagem: str,
+) -> None:
+    if on_log is not None:
+        on_log(nivel, mensagem)
+
+
+def _emitir_progresso(
+    on_progress: Optional[Callable[[int, int, str], None]],
+    atual: int,
+    total: int,
+    descricao: str,
+) -> None:
+    if on_progress is not None:
+        on_progress(atual, total, descricao)
+
+
 def extrair_datetime_resumo(texto: Any) -> Optional[datetime]:
     """
     Extrai objeto datetime a partir de strings como '9/14/26,8:01:54 AM', '14/09/2026' ou '2026-09-14'.
@@ -190,6 +209,9 @@ def extrair_datetime_resumo(texto: Any) -> Optional[datetime]:
     texto_str = str(texto).strip().strip('"\'')
     if not texto_str:
         return None
+
+    texto_str = re.sub(r"\ba\s*\.\s*m\s*\.?", "AM", texto_str, flags=re.IGNORECASE)
+    texto_str = re.sub(r"\bp\s*\.\s*m\s*\.?", "PM", texto_str, flags=re.IGNORECASE)
 
     formatos = [
         "%m/%d/%y,%I:%M:%S %p",
@@ -631,8 +653,12 @@ def ler_resumo_reuniao(caminho: Path) -> Dict[str, Any]:
     Lê a seção '1. Resumo' da lista de presença do Microsoft Teams.
     Extrai:
     - 'data': data formatada como DD/MM/AAAA
-    - 'datetime': objeto datetime da reunião (se disponível)
+    - 'datetime': objeto datetime de início da reunião (se disponível)
+    - 'datetime_fim': objeto datetime de término da reunião (se disponível)
     - 'hora_inicio_raw': texto bruto do campo 'Hora de início'
+    - 'hora_termino_raw': texto bruto do campo 'Hora de término'
+    - 'horario_inicio': horário formatado HH:MM (24h) de início
+    - 'horario_fim': horário formatado HH:MM (24h) de término
     - 'duracao_str': duração da reunião (ex: '4h 2m 32s')
     - 'duracao_segundos': duração da reunião em segundos
     - 'tempo_medio_str': tempo médio de participação (ex: '3h 15m 10s')
@@ -641,7 +667,11 @@ def ler_resumo_reuniao(caminho: Path) -> Dict[str, Any]:
     resumo = {
         "data": "",
         "datetime": None,
+        "datetime_fim": None,
         "hora_inicio_raw": "",
+        "hora_termino_raw": "",
+        "horario_inicio": "",
+        "horario_fim": "",
         "duracao_str": "",
         "duracao_segundos": 0,
         "tempo_medio_str": "",
@@ -698,13 +728,25 @@ def ler_resumo_reuniao(caminho: Path) -> Dict[str, Any]:
         if "HORA DE INICIO" in chave_norm or "START TIME" in chave_norm:
             if not resumo["hora_inicio_raw"]:
                 resumo["hora_inicio_raw"] = valor
-            if not resumo["data"]:
-                dt = extrair_datetime_resumo(valor)
-                if dt:
+            dt = extrair_datetime_resumo(valor)
+            if dt:
+                if resumo["datetime"] is None:
                     resumo["datetime"] = dt
+                if not resumo["data"]:
                     resumo["data"] = dt.strftime("%d/%m/%Y")
-                else:
-                    resumo["data"] = extrair_data_resumo(valor)
+                if not resumo["horario_inicio"]:
+                    resumo["horario_inicio"] = format_time_str(dt.time())
+            elif not resumo["data"]:
+                resumo["data"] = extrair_data_resumo(valor)
+        elif "HORA DE TERMINO" in chave_norm or "HORA DO TERMINO" in chave_norm or "HORA DE FIM" in chave_norm or "HORA DO FIM" in chave_norm:
+            if not resumo["hora_termino_raw"]:
+                resumo["hora_termino_raw"] = valor
+            dt_fim = extrair_datetime_resumo(valor)
+            if dt_fim:
+                if resumo["datetime_fim"] is None:
+                    resumo["datetime_fim"] = dt_fim
+                if not resumo["horario_fim"]:
+                    resumo["horario_fim"] = format_time_str(dt_fim.time())
         elif "TEMPO MEDIO DE PARTICIPACAO" in chave_norm or "TEMPO MEDIO" in chave_norm or "AVERAGE ATTENDANCE TIME" in chave_norm or "AVERAGE PARTICIPATION TIME" in chave_norm:
             if not resumo["tempo_medio_str"]:
                 segs = tempo_em_segundos(valor)
@@ -1213,10 +1255,6 @@ def criar_dados_do_encontro(resultado: pd.DataFrame, numero_encontro: int) -> pd
     return encontro
 
 
-# Retrocompatibilidade
-criar_dados_do_dia = criar_dados_do_encontro
-
-
 def calcular_presenca_por_uorg(resultado: pd.DataFrame) -> pd.DataFrame:
     """Calcula quantidade de servidores presentes por UORG no encontro."""
     presentes = resultado[resultado["Compareceu"] == "Presente"]
@@ -1259,10 +1297,6 @@ def processar_encontro(
     encontro = criar_dados_do_encontro(resultado, numero_encontro)
     por_uorg = calcular_presenca_por_uorg(resultado)
     return resultado, encontro, por_uorg
-
-
-# Retrocompatibilidade
-processar_dia = processar_encontro
 
 
 def preparar_convocados(
@@ -1419,8 +1453,6 @@ def adicionar_encontros_presenca(relatorio: pd.DataFrame, encontros_presenca: Li
         col_encontro = f"Encontro {num}"
         if col_encontro in relatorio.columns:
             relatorio[col_encontro] = relatorio[col_encontro].fillna("00:00:00")
-        elif f"Dia {num}" in relatorio.columns:
-            relatorio[f"Dia {num}"] = relatorio[f"Dia {num}"].fillna("00:00:00")
 
         col_comp = f"Comparecimento {num}"
         if col_comp in relatorio.columns:
@@ -1429,8 +1461,77 @@ def adicionar_encontros_presenca(relatorio: pd.DataFrame, encontros_presenca: Li
     return relatorio
 
 
-# Retrocompatibilidade
-adicionar_dias_presenca = adicionar_encontros_presenca
+def aplicar_justificativas(
+    relatorio: pd.DataFrame,
+    arquivos_presenca: List[Path],
+    justificativas: Optional[List[Dict[str, Any]]] = None,
+) -> pd.DataFrame:
+    """
+    Aplica justificativas de falta registradas no curso:
+    para cada justificativa cujo participante esteja 'Ausente' no encontro correspondente,
+    define Comparecimento N = 'Justificado', abona o tempo em Encontro N e recalcula 'Presenças'.
+    """
+    if relatorio is None or relatorio.empty or not justificativas:
+        return relatorio
+
+    relatorio = relatorio.copy()
+    mapa_arquivo_para_num = {Path(arq).name: idx for idx, arq in enumerate(arquivos_presenca, start=1)}
+
+    por_email: Dict[str, int] = {}
+    por_nome: Dict[str, int] = {}
+    for idx_row, row in relatorio.iterrows():
+        email_k = normalizar_email(row.get("Email", "")) if "Email" in relatorio.columns else ""
+        nome_k = normalizar_texto(row.get("Nome", ""))
+        if email_k and email_k not in por_email:
+            por_email[email_k] = idx_row
+        if nome_k and nome_k not in por_nome:
+            por_nome[nome_k] = idx_row
+
+    for just in justificativas:
+        arq_nome = str(just.get("arquivo_encontro", "")).strip()
+        num_encontro = mapa_arquivo_para_num.get(arq_nome)
+        if num_encontro is None:
+            continue
+
+        col_enc = f"Encontro {num_encontro}"
+        col_comp = f"Comparecimento {num_encontro}"
+        if col_enc not in relatorio.columns or col_comp not in relatorio.columns:
+            continue
+
+        email_j = normalizar_email(just.get("email", ""))
+        nome_j = normalizar_texto(just.get("nome", ""))
+        idx_alvo = por_email.get(email_j) if email_j else None
+        if idx_alvo is None and nome_j:
+            idx_alvo = por_nome.get(nome_j)
+        if idx_alvo is None:
+            continue
+
+        status_atual = str(relatorio.at[idx_alvo, col_comp]).strip().upper()
+        if status_atual == "PRESENTE":
+            continue
+
+        tempo_abonado = max(0, int(just.get("tempo_abonado_segundos", 0) or 0))
+        tempo_atual_seg = tempo_em_segundos(relatorio.at[idx_alvo, col_enc])
+        tempo_final_seg = max(tempo_atual_seg, tempo_abonado)
+
+        relatorio.at[idx_alvo, col_comp] = "Justificado"
+        relatorio.at[idx_alvo, col_enc] = segundos_em_formato_digital(tempo_final_seg)
+
+    # Recalcula 'Presenças' de forma idêntica à fórmula Excel (=COUNTIFS(..., "<>Ausente"))
+    qtd_encontros = len(arquivos_presenca)
+    novas_presencas: List[int] = []
+    for _, row in relatorio.iterrows():
+        total_p = 0
+        for num in range(1, qtd_encontros + 1):
+            col_comp = f"Comparecimento {num}"
+            if col_comp in relatorio.columns:
+                val = str(row.get(col_comp, "")).strip()
+                if val and val.upper() != "AUSENTE":
+                    total_p += 1
+        novas_presencas.append(total_p)
+    relatorio["Presenças"] = novas_presencas
+
+    return relatorio
 
 
 def calcular_carga_participada(linha: pd.Series, quantidade_encontros: int) -> int:
@@ -1438,8 +1539,6 @@ def calcular_carga_participada(linha: pd.Series, quantidade_encontros: int) -> i
     total = 0
     for num in range(1, quantidade_encontros + 1):
         tempo = linha.get(f"Encontro {num}")
-        if tempo is None:
-            tempo = linha.get(f"Dia {num}")
         if pd.notna(tempo):
             total += tempo_em_segundos(tempo)
     return total
@@ -1474,29 +1573,15 @@ def calcular_encontros_minimos(quantidade_encontros: int, percentual_minimo: flo
     return max(1, min(quantidade_encontros, encontros))
 
 
-# Retrocompatibilidade
-calcular_dias_minimos = calcular_encontros_minimos
-
-
 def adicionar_aptidao(
     relatorio: pd.DataFrame,
     carga_segundos: pd.Series,
-    quantidade_encontros: Optional[int] = None,
+    quantidade_encontros: int = 0,
     carga_horaria_horas: float = 0.0,
     percentual_minimo_carga: float = 0.75,
     percentual_minimo_encontros: float = 0.75,
-    quantidade_dias: Optional[int] = None,
-    percentual_minimo_dias: Optional[float] = None,
 ) -> pd.DataFrame:
     """Calcula critérios de aprovação / aptidão."""
-    if quantidade_encontros is None:
-        quantidade_encontros = quantidade_dias if quantidade_dias is not None else 0
-    elif quantidade_dias is not None:
-        quantidade_encontros = quantidade_dias
-
-    if percentual_minimo_dias is not None:
-        percentual_minimo_encontros = percentual_minimo_dias
-
     relatorio = relatorio.copy()
 
     carga_total_seg = int(carga_horaria_horas * 3600)
@@ -1507,7 +1592,6 @@ def adicionar_aptidao(
     relatorio["Apto por CH"] = (carga_segundos >= carga_minima_seg).map({True: "APTO", False: "NÃO APTO"})
     relatorio["Apto por Presença"] = status_presenca
     relatorio["Apto por Encontros"] = status_presenca
-    relatorio["Apto por Dias"] = status_presenca
     relatorio["Apto em Ambos"] = (
         (relatorio["Apto por CH"] == "APTO") & (status_presenca == "APTO")
     ).map({True: "APTO", False: "NÃO APTO"})
@@ -1522,7 +1606,7 @@ def criar_aba_presencas(relatorio: pd.DataFrame, quantidade_encontros: int) -> p
     """
     colunas_presencas = ["Nome"]
     for num in range(1, quantidade_encontros + 1):
-        col_encontro = f"Encontro {num}" if f"Encontro {num}" in relatorio.columns else f"Dia {num}"
+        col_encontro = f"Encontro {num}"
         col_comp = f"Comparecimento {num}"
         if col_encontro in relatorio.columns:
             colunas_presencas.append(col_encontro)
@@ -2073,7 +2157,7 @@ def formatar_valor_configuracao(chave: str, valor: Any, config: Dict[str, Any]) 
         except (ValueError, TypeError):
             return f"{val_str} horas"
 
-    elif chave in ("PERCENTUAL_MINIMO_CARGA", "PERCENTUAL_MINIMO_ENCONTROS", "PERCENTUAL_MINIMO_DIAS"):
+    elif chave in ("PERCENTUAL_MINIMO_CARGA", "PERCENTUAL_MINIMO_ENCONTROS"):
         try:
             pct_num = float(str(val_str).replace("%", "").replace(",", "."))
             if pct_num > 1.0:
@@ -2117,6 +2201,51 @@ def formatar_valor_configuracao(chave: str, valor: Any, config: Dict[str, Any]) 
     return val_str
 
 
+def _resumir_horarios_encontros(config: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    """
+    Retorna (val_inicio, val_fim, obs_inicio, obs_fim) para a aba 'Informações do Curso'.
+    Se todos os encontros compartilham a mesma janela ou se há apenas horário global, exibe o valor único.
+    Se os encontros possuem horários distintos, indica 'Variável por encontro' e detalha nas observações.
+    """
+    obs_padrao_ini = "Horário inicial considerado para contabilizar a permanência em cada encontro."
+    obs_padrao_fim = "Horário final considerado para contabilizar a permanência em cada encontro."
+
+    encontros = config.get("ENCONTROS") or []
+    pares = [(str(e.get("horario_inicio", "")).strip(), str(e.get("horario_fim", "")).strip()) for e in encontros]
+    pares_preenchidos = [(i, f) for i, f in pares if i or f]
+
+    if not pares_preenchidos:
+        return (
+            formatar_valor_configuracao("HORARIO_INICIO", config.get("HORARIO_INICIO", ""), config),
+            formatar_valor_configuracao("HORARIO_FIM", config.get("HORARIO_FIM", ""), config),
+            obs_padrao_ini,
+            obs_padrao_fim,
+        )
+
+    unicos = set(pares)
+    if len(unicos) == 1:
+        ini_u, fim_u = next(iter(unicos))
+        return (
+            formatar_valor_configuracao("HORARIO_INICIO", ini_u, config),
+            formatar_valor_configuracao("HORARIO_FIM", fim_u, config),
+            obs_padrao_ini,
+            obs_padrao_fim,
+        )
+
+    detalhes_ini = " | ".join(
+        f"Enc. {idx}: {ini or '-'}" for idx, (ini, _) in enumerate(pares, start=1)
+    )
+    detalhes_fim = " | ".join(
+        f"Enc. {idx}: {fim or '-'}" for idx, (_, fim) in enumerate(pares, start=1)
+    )
+    return (
+        "Variável por encontro",
+        "Variável por encontro",
+        f"Por encontro: {detalhes_ini}",
+        f"Por encontro: {detalhes_fim}",
+    )
+
+
 def criar_aba_informacoes_curso(config: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     """
     Cria DataFrame para a aba 'Informações do Curso'.
@@ -2128,10 +2257,7 @@ def criar_aba_informacoes_curso(config: Optional[Dict[str, Any]] = None) -> pd.D
     if not config:
         config = {}
 
-    pct_encontros = config.get(
-        "PERCENTUAL_MINIMO_ENCONTROS",
-        config.get("PERCENTUAL_MINIMO_DIAS", 0.75)
-    )
+    pct_encontros = config.get("PERCENTUAL_MINIMO_ENCONTROS", 0.75)
     try:
         pct_encontros_num = float(str(pct_encontros).replace("%", "").replace(",", "."))
         if pct_encontros_num > 1.0:
@@ -2150,6 +2276,8 @@ def criar_aba_informacoes_curso(config: Optional[Dict[str, Any]] = None) -> pd.D
     data_emissao = config.get("DATA_EMISSAO")
     if not data_emissao:
         data_emissao = config.get("DATA_FIM") or config.get("DATA_INICIO") or ""
+
+    val_h_ini, val_h_fim, obs_h_ini, obs_h_fim = _resumir_horarios_encontros(config)
 
     linhas = [
         {
@@ -2199,13 +2327,13 @@ def criar_aba_informacoes_curso(config: Optional[Dict[str, Any]] = None) -> pd.D
         },
         {
             "Item": "Horário de Início",
-            "Configuração": formatar_valor_configuracao("HORARIO_INICIO", config.get("HORARIO_INICIO", ""), config),
-            "Observação": "Horário inicial considerado para contabilizar a permanência em cada encontro.",
+            "Configuração": val_h_ini,
+            "Observação": obs_h_ini,
         },
         {
             "Item": "Horário de Fim",
-            "Configuração": formatar_valor_configuracao("HORARIO_FIM", config.get("HORARIO_FIM", ""), config),
-            "Observação": "Horário final considerado para contabilizar a permanência em cada encontro.",
+            "Configuração": val_h_fim,
+            "Observação": obs_h_fim,
         },
     ]
 
@@ -2223,7 +2351,7 @@ def organizar_colunas(relatorio: pd.DataFrame, quantidade_encontros: int = 0) ->
         "CH Total",
         "% da CH Total",
         "Apto por CH",
-        "Apto por Presença" if "Apto por Presença" in relatorio.columns else ("Apto por Encontros" if "Apto por Encontros" in relatorio.columns else "Apto por Dias"),
+        "Apto por Presença" if "Apto por Presença" in relatorio.columns else "Apto por Encontros",
         "Apto em Ambos",
     ]
 
@@ -2286,7 +2414,6 @@ def alinhar_colunas(planilha):
                     "CH Total",
                 )
                 or nome_col.startswith("Encontro ")
-                or nome_col.startswith("Dia ")
                 or nome_col.startswith("Comparecimento")
                 or nome_col.startswith("Apto")
             ):
@@ -2452,7 +2579,7 @@ def formatar_aba_certificacao(planilha, estilos, workbook=None, mapa_cacheados=N
             col_pct_ch = letra
         elif val_cab in ("Apto por CH", "Apto ao Certificado"):
             col_apto_ch = letra
-        elif val_cab.startswith("Apto por Presença") or val_cab.startswith("Apto por Encontros") or val_cab.startswith("Apto por Dias"):
+        elif val_cab.startswith("Apto por Presença") or val_cab.startswith("Apto por Encontros"):
             col_apto_pres = letra
         elif val_cab == "Apto em Ambos":
             col_apto_ambos = letra
@@ -2514,12 +2641,7 @@ def formatar_aba_certificacao(planilha, estilos, workbook=None, mapa_cacheados=N
             if mapa_cacheados is not None and cel_ch.value is not None:
                 mapa_cacheados.setdefault(planilha.title, {})[cel_ch.coordinate] = cel_ch.value
             col_fim = cols_comp_pres[-1] if cols_comp_pres else cols_dur_pres[-1]
-            crit_enc = "Encontro*"
-            if "Presenças" in workbook.sheetnames:
-                val_b1 = str(workbook["Presenças"].cell(row=1, column=2).value or "").strip()
-                if val_b1.startswith("Dia"):
-                    crit_enc = "Dia*"
-            cel_ch.value = f"=SUMIF('Presenças'!$B$1:${col_fim}$1, \"{crit_enc}\", 'Presenças'!B{num_linha}:{col_fim}{num_linha})"
+            cel_ch.value = f"=SUMIF('Presenças'!$B$1:${col_fim}$1, \"Encontro*\", 'Presenças'!B{num_linha}:{col_fim}{num_linha})"
             cel_ch.number_format = "[h]:mm:ss"
             cel_ch.alignment = Alignment(horizontal="center", vertical="center")
 
@@ -3099,9 +3221,13 @@ def formatar_aba_presencas(
                         cel_dur.value = seg / 86400.0
                     cel_dur.number_format = "hh:mm:ss"
 
-                if str(cel_comp.value).strip().upper() == "AUSENTE":
+                status_comp_u = str(cel_comp.value).strip().upper()
+                if status_comp_u == "AUSENTE":
                     cel_comp.font = Font(name="Calibri", size=11, bold=True, color="000000")
                     cel_dur.font = Font(name="Calibri", size=11, bold=True, color="000000")
+                elif status_comp_u == "JUSTIFICADO":
+                    cel_comp.font = Font(name="Calibri", size=11, italic=True, bold=True, color="9C6500")
+                    cel_dur.font = Font(name="Calibri", size=11, italic=True, color="9C6500")
                 else:
                     cel_comp.font = Font(name="Calibri", size=11, bold=False, color="000000")
                     cel_dur.font = Font(name="Calibri", size=11, bold=False, color="000000")
@@ -3395,6 +3521,112 @@ def exportar_excel(
         _gravar(caminho_ext)
 
 
+def _resolver_janela_encontro(
+    arquivo: Path,
+    config: Optional[Dict[str, Any]],
+    fallback_ini: Any,
+    fallback_fim: Any,
+) -> Tuple[Any, Any]:
+    """Resolve (horario_inicio, horario_fim) específicos de um encontro ou usa o padrão global."""
+    if config and config.get("ENCONTROS"):
+        for enc in config["ENCONTROS"]:
+            if str(enc.get("arquivo", "")).strip() == arquivo.name:
+                ini = str(enc.get("horario_inicio", "")).strip() or None
+                fim = str(enc.get("horario_fim", "")).strip() or None
+                if ini is not None or fim is not None:
+                    return ini, fim
+                if fallback_ini is None and fallback_fim is None:
+                    return None, None
+                return fallback_ini, fallback_fim
+    return fallback_ini, fallback_fim
+
+
+def carregar_matriz_presencas(caminho_relatorio: Path) -> Dict[str, Any]:
+    """
+    Lê as abas 'Certificação' e 'Presenças' de um relatório Excel gerado
+    para exibição interativa de faltas e justificativas na interface.
+    """
+    from openpyxl import load_workbook
+    from core.certificados import carregar_relatorio_presenca
+
+    if not existe_com_fallback(caminho_relatorio):
+        raise FileNotFoundError(f"Relatório de presenças não encontrado: {caminho_relatorio}")
+
+    df_cert = carregar_relatorio_presenca(caminho_relatorio)
+
+    try:
+        wb = load_workbook(caminho_relatorio, data_only=True, read_only=True)
+    except (FileNotFoundError, OSError):
+        wb = load_workbook(caminho_estendido(caminho_relatorio), data_only=True, read_only=True)
+
+    titulos_encontros: List[str] = []
+    mapa_presencas: Dict[str, List[Dict[str, str]]] = {}
+    try:
+        if "Presenças" in wb.sheetnames:
+            ws = wb["Presenças"]
+            rows = list(ws.iter_rows(values_only=True))
+            if rows:
+                cab = rows[0]
+                num_enc = (len(cab) - 1) // 2
+                for idx in range(1, num_enc + 1):
+                    tit = str(cab[2 * idx - 1] or f"Encontro {idx}").strip()
+                    titulos_encontros.append(tit)
+                for row in rows[1:]:
+                    nome = str(row[0] or "").strip()
+                    if not nome:
+                        continue
+                    itens = []
+                    for idx in range(1, num_enc + 1):
+                        val_dur = row[2 * idx - 1] if 2 * idx - 1 < len(row) else ""
+                        val_comp = row[2 * idx] if 2 * idx < len(row) else "Ausente"
+                        if isinstance(val_dur, (int, float)):
+                            dur_str = segundos_em_formato_digital(int(round(float(val_dur) * 86400)))
+                        elif isinstance(val_dur, time):
+                            dur_str = val_dur.strftime("%H:%M:%S")
+                        elif isinstance(val_dur, timedelta):
+                            dur_str = segundos_em_formato_digital(int(val_dur.total_seconds()))
+                        else:
+                            dur_str = str(val_dur or "00:00:00")
+                        itens.append({
+                            "numero": idx,
+                            "titulo": titulos_encontros[idx - 1],
+                            "duracao": dur_str,
+                            "status": str(val_comp or "Ausente").strip(),
+                        })
+                    mapa_presencas[normalizar_texto(nome)] = itens
+    finally:
+        wb.close()
+
+    linhas: List[Dict[str, Any]] = []
+    for _, row in df_cert.iterrows():
+        nome = str(row.get("Nome", "")).strip()
+        email = str(row.get("Email", "")).strip() if pd.notna(row.get("Email")) else ""
+        uorg = str(row.get("UORG", "")).strip() if pd.notna(row.get("UORG")) else ""
+        pct_raw = row.get("% da CH Total", 0.0)
+        try:
+            pct_val = float(pct_raw) if pd.notna(pct_raw) else 0.0
+        except (ValueError, TypeError):
+            pct_val = 0.0
+
+        linhas.append({
+            "nome": nome,
+            "email": email,
+            "uorg": uorg,
+            "presencas": int(row.get("Presenças", 0) or 0) if pd.notna(row.get("Presenças")) else 0,
+            "ch_total": str(row.get("CH Total", "0:00:00") or "0:00:00"),
+            "pct_ch": pct_val,
+            "apto_ch": str(row.get("Apto por CH", "")).strip(),
+            "apto_presenca": str(row.get("Apto por Presença", "")).strip(),
+            "apto_ambos": str(row.get("Apto em Ambos", "")).strip(),
+            "encontros": mapa_presencas.get(normalizar_texto(nome), []),
+        })
+
+    return {
+        "titulos_encontros": titulos_encontros,
+        "participantes": linhas,
+    }
+
+
 def gerar_relatorio(
     caminho_servidores: Path,
     caminho_convocados: Path,
@@ -3404,13 +3636,11 @@ def gerar_relatorio(
     tempo_comparecimento_minutos: int,
     percentual_minimo_carga: float = 0.75,
     percentual_minimo_encontros: float = 0.75,
-    percentual_minimo_dias: Optional[float] = None,
     config: Optional[Dict[str, Any]] = None,
+    on_log: Optional[Callable[[str, str], None]] = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> pd.DataFrame:
     """Executa o pipeline completo de geração de relatório de presenças."""
-    if percentual_minimo_dias is not None:
-        percentual_minimo_encontros = percentual_minimo_dias
-
     caminho_saida_excel = Path(caminho_saida_excel)
     caminho_convocados = Path(caminho_convocados)
     caminho_servidores = Path(caminho_servidores)
@@ -3457,17 +3687,18 @@ def gerar_relatorio(
                 "TM_INICIO": None,
                 "TM_FIM": None,
                 "IGNORAR_EMAILS": [],
-                "EMAILS_IGNORADOS": [],
+                "ENCONTROS": [],
+                "JUSTIFICATIVAS": [],
             }
 
     emails_ignorados = set()
     if config:
-        raw_ign = config.get("IGNORAR_EMAILS") or config.get("EMAILS_IGNORADOS") or []
+        raw_ign = config.get("IGNORAR_EMAILS") or []
         if isinstance(raw_ign, str):
             raw_ign = [p.strip() for p in re.split(r"[,;\n]", raw_ign) if p.strip()]
         emails_ignorados = {normalizar_email(e) for e in raw_ign if normalizar_email(e)}
         if emails_ignorados:
-            print(f"   E-mails configurados para ignorar: {len(emails_ignorados)}")
+            _emitir_log(on_log, "info", f"E-mails configurados para ignorar: {len(emails_ignorados)}")
 
     horario_inicio_cfg = None
     horario_fim_cfg = None
@@ -3479,9 +3710,7 @@ def gerar_relatorio(
         if isinstance(horario_fim_cfg, str) and not horario_fim_cfg.strip():
             horario_fim_cfg = None
 
-    recorte_horario_ativo = horario_inicio_cfg is not None or horario_fim_cfg is not None
-
-    print("-> Carregando lista de servidores...")
+    _emitir_log(on_log, "info", "Carregando lista global de servidores...")
     servidores = ler_excel_com_fallback(caminho_servidores)
 
     arquivos_presenca = ordenar_arquivos_presenca(arquivos_presenca)
@@ -3489,27 +3718,33 @@ def gerar_relatorio(
     if quantidade_encontros == 0:
         raise ValueError("Nenhum arquivo de presença foi fornecido.")
 
+    total_etapas = quantidade_encontros + 4
     resultados = []
     encontros_presenca = []
     lista_resumos = []
     lista_interacoes = []
 
-    print(f"-> Processando {quantidade_encontros} lista(s) de presença dos encontros...")
+    _emitir_log(on_log, "info", f"Processando {quantidade_encontros} lista(s) de presença...")
     for num_encontro, arq in enumerate(arquivos_presenca, start=1):
-        print(f"   [Encontro {num_encontro}] Processando: {arq.name}")
+        _emitir_progresso(on_progress, num_encontro, total_etapas, f"Processando Encontro {num_encontro}: {arq.name}")
+        _emitir_log(on_log, "info", f"[Encontro {num_encontro}] Processando: {arq.name}")
+
+        h_ini_enc, h_fim_enc = _resolver_janela_encontro(arq, config, horario_inicio_cfg, horario_fim_cfg)
+        recorte_enc_ativo = h_ini_enc is not None or h_fim_enc is not None
+
         resultado, encontro, _ = processar_encontro(
             arquivo=arq,
             servidores=servidores,
             numero_encontro=num_encontro,
             tempo_comparecimento_minutos=tempo_comparecimento_minutos,
             emails_ignorados=emails_ignorados,
-            horario_inicio=horario_inicio_cfg,
-            horario_fim=horario_fim_cfg,
+            horario_inicio=h_ini_enc,
+            horario_fim=h_fim_enc,
         )
         resumo = ler_resumo_reuniao(arq)
         dados_atividades = ler_atividades_reuniao(arq)
         resumo["usou_secao3"] = dados_atividades is not None
-        resumo["recorte_aplicado"] = bool(recorte_horario_ativo and dados_atividades is not None)
+        resumo["recorte_aplicado"] = bool(recorte_enc_ativo and dados_atividades is not None)
         if not resumo.get("data") and dados_atividades is not None and not dados_atividades.empty:
             datas_s3 = [
                 dt.date() for dt in (parse_datetime_atividade(v) for v in dados_atividades["Horário de entrada"])
@@ -3536,16 +3771,22 @@ def gerar_relatorio(
 
     todos_resultados = pd.concat(resultados, ignore_index=True)
 
-    print("-> Cruzando dados com a lista de convocados...")
+    _emitir_progresso(on_progress, quantidade_encontros + 1, total_etapas, "Cruzando dados com a lista de convocados...")
+    _emitir_log(on_log, "info", "Cruzando dados com a lista de convocados...")
     convocados = preparar_convocados(caminho_convocados, servidores, emails_ignorados=emails_ignorados)
 
     relatorio = adicionar_total_presencas(convocados, todos_resultados)
     relatorio = adicionar_encontros_presenca(relatorio, encontros_presenca)
 
+    justificativas = config.get("JUSTIFICATIVAS", []) if config else []
+    if justificativas:
+        _emitir_log(on_log, "info", f"Aplicando {len(justificativas)} justificativa(s) registrada(s)...")
+        relatorio = aplicar_justificativas(relatorio, arquivos_presenca, justificativas=justificativas)
+
     # Recalcula Tempo Médio dos encontros com recorte ativo a partir dos tempos recortados
     for idx_enc, resumo in enumerate(lista_resumos, start=1):
         if resumo.get("recorte_aplicado"):
-            col_enc = f"Encontro {idx_enc}" if f"Encontro {idx_enc}" in relatorio.columns else f"Dia {idx_enc}"
+            col_enc = f"Encontro {idx_enc}"
             if col_enc in relatorio.columns:
                 tempos_validos = [tempo_em_segundos(v) for v in relatorio[col_enc] if tempo_em_segundos(v) > 0]
                 tm_recortado = int(round(sum(tempos_validos) / len(tempos_validos))) if tempos_validos else 0
@@ -3556,14 +3797,14 @@ def gerar_relatorio(
                 resumo["tempo_medio_participacao_segundos"] = tm_recortado
                 resumo["tempo_medio_participacao_str"] = segundos_em_tempo(tm_recortado)
 
-    print("-> Calculando carga horária e percentuais...")
+    _emitir_progresso(on_progress, quantidade_encontros + 2, total_etapas, "Calculando carga horária e critérios de aptidão...")
+    _emitir_log(on_log, "info", "Calculando carga horária e critérios de aptidão...")
     relatorio, carga_segundos = adicionar_carga_horaria(
         relatorio=relatorio,
         quantidade_encontros=quantidade_encontros,
         carga_horaria_horas=carga_horaria_horas,
     )
 
-    print("-> Calculando critérios de aptidão...")
     relatorio = adicionar_aptidao(
         relatorio=relatorio,
         carga_segundos=carga_segundos,
@@ -3573,7 +3814,8 @@ def gerar_relatorio(
         percentual_minimo_encontros=percentual_minimo_encontros,
     )
 
-    print("-> Formatando e organizando colunas...")
+    _emitir_progresso(on_progress, quantidade_encontros + 3, total_etapas, "Organizando abas e fórmulas da planilha...")
+    _emitir_log(on_log, "info", "Organizando abas e fórmulas da planilha...")
     if "Nome" in relatorio.columns:
         relatorio = relatorio.sort_values(
             by="Nome",
@@ -3617,7 +3859,8 @@ def gerar_relatorio(
             dt_res = str(config["DATA_INICIO"])
         datas_encontros.append(dt_res or "")
 
-    print(f"-> Formatando e salvando planilha em: {caminho_saida_excel.name}...")
+    _emitir_progresso(on_progress, total_etapas, total_etapas, f"Salvando planilha em {caminho_saida_excel.name}...")
+    _emitir_log(on_log, "info", f"Formatando e salvando planilha em: {caminho_saida_excel.name}...")
     garantir_diretorio(caminho_saida_excel.parent)
     exportar_excel(
         df_certificacao,
@@ -3631,10 +3874,12 @@ def gerar_relatorio(
         datas_encontros=datas_encontros,
     )
 
-    total_aptos = (df_certificacao["Apto por CH"] == "APTO").sum()
+    total_aptos = int((df_certificacao["Apto por CH"] == "APTO").sum())
     total_participantes = len(df_certificacao)
-    print(f"[OK] Relatório gerado com sucesso!")
-    print(f"   Total de participantes convocados: {total_participantes}")
-    print(f"   Total de participantes aptos: {total_aptos}")
+    _emitir_log(
+        on_log,
+        "sucesso",
+        f"Relatório gerado! Convocados: {total_participantes} | Aptos: {total_aptos}",
+    )
 
     return df_certificacao
