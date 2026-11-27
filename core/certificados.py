@@ -7,27 +7,23 @@ Extraído e adaptado diretamente de certificados.ipynb.
 from pathlib import Path
 from datetime import datetime
 import re
-import os
-import shutil
 import pandas as pd
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Callable
 from pypdf import PdfWriter
 import win32com.client as win32
 from core.caminhos import (
     caminho_estendido,
     garantir_diretorio,
     abrir_arquivo,
-    copiar_arquivo_com_fallback,
     existe_com_fallback,
     listar_diretorio_com_fallback,
     ler_excel_com_fallback,
     sanitizar_nome_arquivo,
-    encurtar_caminho_se_necessario,
     LIMITE_CARACTERES_CAMINHO_FINAL,
     obter_mensagem_orientacao_caminho_profundo,
     esvaziar_pasta,
 )
-from core.ui import verde, vermelho, ciano, negrito, dim, seguro_print
+from core.eventos import cancelado, emitir_log, emitir_progresso
 
 
 MESES = {
@@ -445,11 +441,14 @@ def gerar_todos_certificados(
     config: Dict[str, Any],
     caminho_ppt_junto: Optional[Path] = None,
     salvar_ppt_individual: bool = False,
+    on_log: Optional[Callable[[str, str], None]] = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
+    cancel_event: Optional[Any] = None,
 ) -> pd.DataFrame:
     """
     Gera certificados para todos os participantes aptos diretamente para as pastas de destino.
     Gera PDFs individuais e, opcionalmente, um arquivo PowerPoint único com todos os certificados.
-    Por padrão não cria arquivos PPT individuais.
+    Suporta callbacks estruturados e cancelamento cooperativo.
     """
     if salvar_ppt_individual and pasta_ppt:
         garantir_diretorio(pasta_ppt)
@@ -463,9 +462,14 @@ def gerar_todos_certificados(
     if pasta_ppt and existe_com_fallback(pasta_ppt):
         removidos_ppt = esvaziar_pasta(pasta_ppt, (".pptx", ".pptm"))
     if removidos_pdf > 0 or removidos_ppt > 0:
-        seguro_print(f"  {dim(f'-> Limpeza prévia: {removidos_pdf} PDF(s) e {removidos_ppt} PPT(s) de execuções anteriores foram removidos.')}")
+        emitir_log(
+            on_log,
+            "info",
+            f"Limpeza prévia: {removidos_pdf} PDF(s) e {removidos_ppt} PPT(s) anteriores removidos.",
+        )
 
     total = len(df_aptos)
+    total_etapas = total + (1 if (caminho_ppt_junto and total > 0) else 0)
     resultados = []
 
     # Validação antecipada de caminhos para evitar falhas no PowerPoint
@@ -497,8 +501,7 @@ def gerar_todos_certificados(
         )
         raise ValueError(msg_orientacao)
 
-    seguro_print(f"\n  {ciano(negrito(f'GERAÇÃO DE CERTIFICADOS ({total} participantes aptos)'))}")
-    seguro_print(f"  {dim('-' * 60)}")
+    emitir_log(on_log, "info", f"Iniciando geração de certificados ({total} participante(s) apto(s))...")
 
     # Inicia o PowerPoint UMA ÚNICA VEZ antes do loop para garantir velocidade e estabilidade total
     powerpoint = None
@@ -511,11 +514,18 @@ def gerar_todos_certificados(
     except Exception as e:
         raise RuntimeError(f"Não foi possível inicializar o Microsoft PowerPoint: {e}")
 
+    foi_cancelado = False
     try:
         for i, (_, linha) in enumerate(df_aptos.iterrows(), start=1):
+            if cancelado(cancel_event):
+                foi_cancelado = True
+                emitir_log(on_log, "aviso", "Geração de certificados cancelada pelo usuário.")
+                break
+
             nome = str(linha["Nome"]).strip()
             email = str(linha.get("Email", "")).strip() if pd.notna(linha.get("Email")) else ""
-            seguro_print(f"  {ciano(f'[{i}/{total}]')} Gerando certificado para: {negrito(nome)}")
+            emitir_progresso(on_progress, i, total_etapas, f"Gerando certificado ({i}/{total}): {nome}")
+            emitir_log(on_log, "info", f"[{i}/{total}] Gerando certificado para: {nome}")
 
             try:
                 caminho_pdf = gerar_pdf_pessoa(
@@ -534,9 +544,9 @@ def gerar_todos_certificados(
                     "Status": "OK",
                     "Erro": "",
                 })
-                seguro_print(f"     -> {verde('[OK] Sucesso:')} {caminho_pdf.name}")
+                emitir_log(on_log, "sucesso", f"Gerado: {caminho_pdf.name}")
             except Exception as e:
-                seguro_print(f"     -> {vermelho('[ERRO] Falha:')} {e}")
+                emitir_log(on_log, "erro", f"Falha para {nome}: {e}")
                 resultados.append({
                     "Nome": nome,
                     "Email": email,
@@ -546,10 +556,9 @@ def gerar_todos_certificados(
                 })
 
         # Geração do PowerPoint único consolidado com todos os participantes
-        if caminho_ppt_junto and len(df_aptos) > 0:
-            seguro_print(f"\n  {ciano(negrito('GERAÇÃO DE POWERPOINT CONSOLIDADO (TODOS OS CERTIFICADOS)'))}")
-            seguro_print(f"  {dim('-' * 60)}")
-            seguro_print(f"  {ciano('->')} Consolidando todos os certificados em um único arquivo PowerPoint...")
+        if not foi_cancelado and not cancelado(cancel_event) and caminho_ppt_junto and len(df_aptos) > 0:
+            emitir_progresso(on_progress, total_etapas, total_etapas, "Consolidando PowerPoint único...")
+            emitir_log(on_log, "info", "Consolidando todos os certificados em um único arquivo PowerPoint...")
             try:
                 gerar_powerpoint_consolidado(
                     df_aptos=df_aptos,
@@ -558,10 +567,13 @@ def gerar_todos_certificados(
                     config=config,
                     powerpoint=powerpoint,
                 )
-                seguro_print(f"     -> {verde('[OK] Sucesso:')} {Path(caminho_ppt_junto).name}")
+                emitir_log(on_log, "sucesso", f"PPT consolidado gerado: {Path(caminho_ppt_junto).name}")
             except Exception as e:
-                seguro_print(f"     -> {vermelho('[ERRO] Falha ao gerar PPT consolidado:')} {e}")
+                emitir_log(on_log, "erro", f"Falha ao gerar PPT consolidado: {e}")
                 raise
+        elif cancelado(cancel_event) and not foi_cancelado:
+            foi_cancelado = True
+            emitir_log(on_log, "aviso", "Geração interrompida antes da consolidação do PowerPoint.")
 
     finally:
         if powerpoint is not None:
@@ -582,15 +594,20 @@ def gerar_todos_certificados(
         df_resultados.to_excel(arq_log, index=False)
     except (FileNotFoundError, OSError):
         df_resultados.to_excel(caminho_estendido(arq_log), index=False)
-    seguro_print(f"\n  {verde('[OK]')} {dim(f'Log de auditoria salvo em: {arq_log.name}')}")
+    emitir_log(on_log, "info", f"Log de auditoria salvo em: {arq_log.name}")
 
     return df_resultados
 
 
-def juntar_certificados_pdf(pasta_pdf: Path, caminho_saida_junto: Path) -> Path:
+def juntar_certificados_pdf(
+    pasta_pdf: Path,
+    caminho_saida_junto: Path,
+    on_log: Optional[Callable[[str, str], None]] = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
+    cancel_event: Optional[Any] = None,
+) -> Path:
     """
     Junta todos os certificados PDF encontrados em pasta_pdf em um único arquivo PDF.
-    Pode ser executado separadamente caso o usuário adicione certificados manuais depois.
     """
     caminho_saida_junto = Path(caminho_saida_junto)
     nome_seguro = sanitizar_nome_arquivo(caminho_saida_junto.stem) + caminho_saida_junto.suffix
@@ -605,18 +622,21 @@ def juntar_certificados_pdf(pasta_pdf: Path, caminho_saida_junto: Path) -> Path:
     if not arquivos_pdf:
         raise FileNotFoundError(f"Nenhum arquivo PDF encontrado na pasta '{pasta_pdf}'.")
 
-    seguro_print(f"\n  {ciano(negrito(f'JUNÇÃO DE CERTIFICADOS EM PDF ÚNICO ({len(arquivos_pdf)} arquivos)'))}")
-    seguro_print(f"  {dim('-' * 60)}")
+    total = len(arquivos_pdf)
+    emitir_log(on_log, "info", f"Iniciando junção de {total} certificado(s) em PDF único...")
 
     writer = PdfWriter()
-    for arq in arquivos_pdf:
-        seguro_print(f"     + {dim('Incluindo:')} {arq.name}")
+    for idx, arq in enumerate(arquivos_pdf, start=1):
+        if cancelado(cancel_event):
+            emitir_log(on_log, "aviso", "Junção de PDFs cancelada pelo usuário.")
+            raise InterruptedError("Junção de PDFs cancelada pelo usuário.")
+        emitir_progresso(on_progress, idx, total, f"Unificando PDF ({idx}/{total}): {arq.name}")
+        emitir_log(on_log, "info", f"Incluindo: {arq.name}")
         with abrir_arquivo(arq, "rb") as f_in:
             writer.append(f_in)
 
     with abrir_arquivo(caminho_saida_junto, "wb") as f_out:
         writer.write(f_out)
 
-    seguro_print(f"\n  {verde('[OK] PDF consolidado gerado com sucesso!')}")
-    seguro_print(f"     {dim(f'Arquivo: {caminho_saida_junto}')}")
+    emitir_log(on_log, "sucesso", f"PDF consolidado gerado com sucesso: {caminho_saida_junto.name}")
     return caminho_saida_junto

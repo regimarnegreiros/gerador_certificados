@@ -26,6 +26,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from typing import Tuple, List, Dict, Any, Optional, Set, Collection, Union, Callable
 from core.config import format_time_str, parse_time
+from core.eventos import emitir_log as _emitir_log, emitir_progresso as _emitir_progresso
 from core.caminhos import (
     caminho_estendido,
     caminho_estendido_path,
@@ -179,25 +180,6 @@ def converter_para_inteiro(val: Any) -> int:
         return int(float(val_str.replace(",", ".")))
     except (ValueError, TypeError):
         return 0
-
-
-def _emitir_log(
-    on_log: Optional[Callable[[str, str], None]],
-    nivel: str,
-    mensagem: str,
-) -> None:
-    if on_log is not None:
-        on_log(nivel, mensagem)
-
-
-def _emitir_progresso(
-    on_progress: Optional[Callable[[int, int, str], None]],
-    atual: int,
-    total: int,
-    descricao: str,
-) -> None:
-    if on_progress is not None:
-        on_progress(atual, total, descricao)
 
 
 def extrair_datetime_resumo(texto: Any) -> Optional[datetime]:

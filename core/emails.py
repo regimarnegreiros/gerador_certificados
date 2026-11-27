@@ -1,37 +1,35 @@
 """
 Módulo para envio de e-mails com certificados via Microsoft Outlook.
-Extraído e adaptado diretamente de certificados.ipynb.
 """
 
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 import time
-import os
+from typing import Any, Callable, Dict, Optional
 import pandas as pd
-from typing import Dict, Any, List, Optional
 import win32com.client as win32
+
 from core.caminhos import (
-    caminho_estendido,
-    garantir_diretorio,
-    copiar_arquivo_com_fallback,
-    existe_com_fallback,
     LIMITE_CARACTERES_CAMINHO_FINAL,
+    caminho_estendido,
+    existe_com_fallback,
+    garantir_diretorio,
     obter_mensagem_orientacao_caminho_profundo,
 )
 from core.certificados import nome_seguro_arquivo
-from core.ui import verde, vermelho, amarelo, ciano, negrito, dim, seguro_print
+from core.eventos import cancelado, emitir_log, emitir_progresso
 
 
-def conectar_outlook():
+def conectar_outlook(on_log: Optional[Callable[[str, str], None]] = None):
     """Conecta à instância do Microsoft Outlook aberta ou inicia uma nova."""
     try:
         outlook = win32.GetActiveObject("Outlook.Application")
-        seguro_print(f"  {verde('[OK] Conectado ao Microsoft Outlook em execução.')}")
+        emitir_log(on_log, "sucesso", "Conectado ao Microsoft Outlook em execução.")
         return outlook
     except Exception:
         try:
             outlook = win32.Dispatch("Outlook.Application")
-            seguro_print(f"  {verde('[OK] Iniciado novo processo do Microsoft Outlook.')}")
+            emitir_log(on_log, "sucesso", "Iniciado novo processo do Microsoft Outlook.")
             return outlook
         except Exception as e:
             raise RuntimeError(
@@ -46,8 +44,7 @@ def criar_corpo_email(nome: str, template_corpo: str, nome_curso: str) -> str:
     while linhas and linhas[0].strip().startswith("#"):
         linhas.pop(0)
     texto = "\n".join(linhas)
-    texto = texto.replace("{nome}", nome).replace("{CURSO}", nome_curso)
-    return texto
+    return texto.replace("{nome}", nome).replace("{CURSO}", nome_curso)
 
 
 def criar_mensagem_outlook(
@@ -68,7 +65,6 @@ def criar_mensagem_outlook(
     mail.Subject = assunto
     mail.Body = corpo
 
-    # Anexa o certificado PDF diretamente pelo seu caminho (sem uso de arquivos temporários do sistema)
     caminho_pdf_resolvido = Path(caminho_pdf).resolve()
     if not existe_com_fallback(caminho_pdf_resolvido):
         raise FileNotFoundError(f"Arquivo PDF do certificado não encontrado para anexar: {caminho_pdf_resolvido}")
@@ -94,15 +90,22 @@ def criar_mensagem_outlook(
     return mail
 
 
+def localizar_certificado_pdf(pasta_pdf: Path, nome: str) -> Path:
+    """Retorna o caminho esperado do certificado PDF do participante no padrão 'CERT_NOME.pdf'."""
+    nome_limpo = nome_seguro_arquivo(nome)
+    return Path(pasta_pdf) / f"CERT_{nome_limpo}.pdf"
+
+
 def enviar_email_teste(
     caminho_pdf: Path,
     nome: str,
     email_destinatario: str,
     config: Dict[str, Any],
     abrir_no_outlook: bool = True,
+    on_log: Optional[Callable[[str, str], None]] = None,
 ):
     """Gera um único e-mail de teste para validação do usuário."""
-    outlook = conectar_outlook()
+    outlook = conectar_outlook(on_log=on_log)
     nome_curso = config.get("NOME_DO_CURSO", "")
     assunto = config.get("ASSUNTO_EMAIL", f"Certificado - Curso {nome_curso}")
     corpo = config.get("CORPO_EMAIL", "")
@@ -121,29 +124,12 @@ def enviar_email_teste(
     )
 
     if abrir_no_outlook:
-        seguro_print(f"\n  {dim('-> Abrindo rascunho de conferência no Outlook para')} {negrito(nome)} {dim(f'({email_destinatario})...')}")
+        emitir_log(on_log, "info", f"Abrindo rascunho de conferência no Outlook para {nome} ({email_destinatario})...")
         msg.Display()
-        seguro_print(f"  {verde('[OK] Mensagem exibida na tela do Outlook!')} {dim('Verifique o anexo, assunto e texto.')}")
+        emitir_log(on_log, "sucesso", "Mensagem exibida na tela do Outlook para conferência.")
     else:
         msg.Send()
-        seguro_print(f"  {verde('[OK] E-mail de teste enviado para:')} {email_destinatario}")
-
-
-def localizar_certificado_pdf(pasta_pdf: Path, nome: str) -> Path:
-    """
-    Localiza o arquivo PDF do participante na pasta informada.
-    Prioriza o novo padrão compacto ('CERT_NOME.pdf') e mantém fallback
-    automático para o padrão legado ('CERTIFICADO_NOME.pdf').
-    """
-    pasta = Path(pasta_pdf)
-    nome_limpo = nome_seguro_arquivo(nome)
-    candidato_novo = pasta / f"CERT_{nome_limpo}.pdf"
-    if existe_com_fallback(candidato_novo):
-        return candidato_novo
-    candidato_legado = pasta / f"CERTIFICADO_{nome_limpo}.pdf"
-    if existe_com_fallback(candidato_legado):
-        return candidato_legado
-    return candidato_novo
+        emitir_log(on_log, "sucesso", f"E-mail de teste enviado para: {email_destinatario}")
 
 
 def enviar_todos_emails(
@@ -151,9 +137,17 @@ def enviar_todos_emails(
     pasta_pdf: Path,
     pasta_logs: Path,
     config: Dict[str, Any],
+    on_log: Optional[Callable[[str, str], None]] = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
+    on_item_status: Optional[Callable[[Dict[str, Any]], None]] = None,
+    cancel_event: Optional[Any] = None,
+    intervalo_segundos: float = 1.0,
 ) -> pd.DataFrame:
-    """Dispara os e-mails para todos os participantes aptos que possuem certificado PDF."""
-    outlook = conectar_outlook()
+    """
+    Dispara os e-mails para todos os participantes aptos que possuem certificado PDF.
+    Suporta callbacks de progresso, status por item e cancelamento cooperativo.
+    """
+    outlook = conectar_outlook(on_log=on_log)
     nome_curso = config.get("NOME_DO_CURSO", "")
     assunto = config.get("ASSUNTO_EMAIL", f"Certificado - Curso {nome_curso}")
     corpo = config.get("CORPO_EMAIL", "")
@@ -161,41 +155,48 @@ def enviar_todos_emails(
     total = len(df_aptos)
     resultados = []
 
-    seguro_print(f"\n  {ciano(negrito(f'ENVIO DE E-MAILS VIA OUTLOOK ({total} participantes aptos)'))}")
-    seguro_print(f"  {dim('-' * 60)}")
+    emitir_log(on_log, "info", f"Iniciando envio de e-mails via Outlook ({total} participante(s) apto(s))...")
 
     for i, (_, linha) in enumerate(df_aptos.iterrows(), start=1):
+        if cancelado(cancel_event):
+            emitir_log(on_log, "aviso", "Envio de e-mails cancelado pelo usuário.")
+            break
+
         nome = str(linha["Nome"]).strip()
         email = str(linha.get("Email", "")).strip() if pd.notna(linha.get("Email")) else ""
-
-        # Localiza o arquivo PDF do participante (suporta CERT_ e CERTIFICADO_)
         caminho_pdf = localizar_certificado_pdf(pasta_pdf, nome)
 
-        seguro_print(f"\n  {ciano(f'[{i}/{total}]')} Destinatário: {negrito(nome)}")
-        seguro_print(f"     • E-mail: {email if email else amarelo('(não informado)')}")
+        emitir_progresso(on_progress, i, total, f"Enviando ({i}/{total}): {nome}")
+        emitir_log(on_log, "info", f"[{i}/{total}] Destinatário: {nome} ({email or 'sem e-mail'})")
 
         if not email:
-            seguro_print(f"     -> {vermelho('[ERRO] Participante sem e-mail cadastrado.')}")
-            resultados.append({
+            registro = {
                 "Nome": nome,
                 "Email": "",
                 "PDF": str(caminho_pdf) if existe_com_fallback(caminho_pdf) else "",
                 "Status": "SEM_EMAIL",
                 "Data": datetime.now(),
                 "Erro": "Participante sem e-mail cadastrado",
-            })
+            }
+            resultados.append(registro)
+            if on_item_status is not None:
+                on_item_status(registro)
+            emitir_log(on_log, "erro", f"{nome}: participante sem e-mail cadastrado.")
             continue
 
         if not existe_com_fallback(caminho_pdf):
-            seguro_print(f"     -> {vermelho(f'[ERRO] Certificado PDF não encontrado ({caminho_pdf.name}).')}")
-            resultados.append({
+            registro = {
                 "Nome": nome,
                 "Email": email,
                 "PDF": "",
                 "Status": "SEM_PDF",
                 "Data": datetime.now(),
                 "Erro": f"PDF não encontrado: {caminho_pdf.name}",
-            })
+            }
+            resultados.append(registro)
+            if on_item_status is not None:
+                on_item_status(registro)
+            emitir_log(on_log, "erro", f"{nome}: certificado PDF não encontrado ({caminho_pdf.name}).")
             continue
 
         try:
@@ -209,34 +210,43 @@ def enviar_todos_emails(
                 nome_curso=nome_curso,
             )
             msg.Send()
-            seguro_print(f"     -> {verde('[OK] E-mail enviado com sucesso!')}")
-
-            resultados.append({
+            registro = {
                 "Nome": nome,
                 "Email": email,
                 "PDF": str(caminho_pdf),
                 "Status": "ENVIADO",
                 "Data": datetime.now(),
                 "Erro": "",
-            })
+            }
+            resultados.append(registro)
+            if on_item_status is not None:
+                on_item_status(registro)
+            emitir_log(on_log, "sucesso", f"E-mail enviado com sucesso para {nome} ({email}).")
 
-            # Pausa de segurança de 1 segundo entre envios
-            time.sleep(1)
+            if intervalo_segundos > 0:
+                if cancel_event is not None and callable(getattr(cancel_event, "wait", None)):
+                    if cancel_event.wait(intervalo_segundos):
+                        emitir_log(on_log, "aviso", "Envio de e-mails cancelado pelo usuário.")
+                        break
+                else:
+                    time.sleep(intervalo_segundos)
 
         except Exception as erro:
-            seguro_print(f"     -> {vermelho(f'[ERRO] Falha no envio: {erro}')}")
-            resultados.append({
+            registro = {
                 "Nome": nome,
                 "Email": email,
                 "PDF": str(caminho_pdf),
                 "Status": "ERRO",
                 "Data": datetime.now(),
                 "Erro": str(erro),
-            })
+            }
+            resultados.append(registro)
+            if on_item_status is not None:
+                on_item_status(registro)
+            emitir_log(on_log, "erro", f"Falha no envio para {nome}: {erro}")
 
     df_envio = pd.DataFrame(resultados)
 
-    # Salva log de envio com fallback para caminho estendido
     garantir_diretorio(pasta_logs)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     arq_log = pasta_logs / f"log_envio_{timestamp}.xlsx"
@@ -244,6 +254,6 @@ def enviar_todos_emails(
         df_envio.to_excel(arq_log, index=False)
     except (FileNotFoundError, OSError):
         df_envio.to_excel(caminho_estendido(arq_log), index=False)
-    seguro_print(f"\n  {verde('[OK]')} {dim(f'Log de auditoria salvo em: {arq_log.name}')}")
+    emitir_log(on_log, "info", f"Log de auditoria salvo em: {arq_log.name}")
 
     return df_envio

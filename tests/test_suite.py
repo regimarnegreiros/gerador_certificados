@@ -620,7 +620,7 @@ class TestGeradorCertificados(unittest.TestCase):
         pasta_pdf.mkdir()
 
         # Certificado antigo de usuário que foi removido do relatório
-        cert_antigo = pasta_pdf / "CERTIFICADO_USUARIO_REMOVIDO.pdf"
+        cert_antigo = pasta_pdf / "CERT_USUARIO_REMOVIDO.pdf"
         cert_antigo.write_text("conteudo antigo")
         self.assertTrue(cert_antigo.exists())
 
@@ -632,7 +632,7 @@ class TestGeradorCertificados(unittest.TestCase):
         # Agora cria os certificados dos participantes atualmente aptos
         writer = PdfWriter()
         writer.add_blank_page(width=200, height=200)
-        cert_atual = pasta_pdf / "CERTIFICADO_USUARIO_ATUAL.pdf"
+        cert_atual = pasta_pdf / "CERT_USUARIO_ATUAL.pdf"
         with open(cert_atual, "wb") as f:
             writer.write(f)
 
@@ -643,8 +643,8 @@ class TestGeradorCertificados(unittest.TestCase):
         
         # Garante que na pasta só existe o arquivo atual
         arquivos_na_pasta = [f.name for f in pasta_pdf.iterdir()]
-        self.assertNotIn("CERTIFICADO_USUARIO_REMOVIDO.pdf", arquivos_na_pasta)
-        self.assertIn("CERTIFICADO_USUARIO_ATUAL.pdf", arquivos_na_pasta)
+        self.assertNotIn("CERT_USUARIO_REMOVIDO.pdf", arquivos_na_pasta)
+        self.assertIn("CERT_USUARIO_ATUAL.pdf", arquivos_na_pasta)
 
     def test_validador_subpastas_saida_novas_pastas(self):
         from core.validator import SUBPASTAS_SAIDA
@@ -802,20 +802,19 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertTrue(nome_arq.startswith("cert_"))
         self.assertTrue(nome_arq.endswith("_todos_juntos.pptm"))
 
-    def test_localizar_certificado_pdf_novo_e_legado(self):
+    def test_localizar_certificado_pdf_padrao_cert(self):
         from core.emails import localizar_certificado_pdf
         pasta_pdf = self.temp_dir / "teste_localizar"
         pasta_pdf.mkdir()
 
-        # 1. Deve encontrar o novo padrão CERT_
         (pasta_pdf / "CERT_MARCOS_SOUZA.pdf").write_text("pdf novo")
         res_novo = localizar_certificado_pdf(pasta_pdf, "Marcos Souza")
         self.assertEqual(res_novo.name, "CERT_MARCOS_SOUZA.pdf")
 
-        # 2. Deve encontrar o padrão legado CERTIFICADO_ caso exista
+        # Não faz mais fallback para prefixo legado CERTIFICADO_
         (pasta_pdf / "CERTIFICADO_BEATRIZ_LIMA.pdf").write_text("pdf legado")
-        res_legado = localizar_certificado_pdf(pasta_pdf, "Beatriz Lima")
-        self.assertEqual(res_legado.name, "CERTIFICADO_BEATRIZ_LIMA.pdf")
+        res_sem_legado = localizar_certificado_pdf(pasta_pdf, "Beatriz Lima")
+        self.assertEqual(res_sem_legado.name, "CERT_BEATRIZ_LIMA.pdf")
 
 
     def test_formatar_valor_configuracao(self):
@@ -2106,6 +2105,111 @@ class TestGeradorCertificados(unittest.TestCase):
         mapa_info = dict(zip(df_info["Item"], df_info["Configuração"]))
         self.assertEqual(mapa_info["Horário de Início"], "Variável por encontro")
         self.assertEqual(mapa_info["Horário de Fim"], "Variável por encontro")
+
+    def test_ausencia_de_core_ui_e_callbacks_certificados_emails(self):
+        import threading
+        from unittest.mock import MagicMock, patch
+        import core.certificados as cert_mod
+        import core.emails as email_mod
+
+        # 1. Garante que core/ui.py foi removido e nenhum módulo core/ o referencia
+        self.assertFalse((diretorio_raiz / "core" / "ui.py").exists())
+        for py_arq in (diretorio_raiz / "core").glob("*.py"):
+            conteudo = py_arq.read_text(encoding="utf-8")
+            self.assertNotIn("core.ui", conteudo)
+            self.assertNotIn("seguro_print", conteudo)
+
+        # 2. Testa callbacks e cancelamento em gerar_todos_certificados (mock PowerPoint)
+        pasta_pdf = self.temp_dir / "cert_cancel_pdf"
+        pasta_logs = self.temp_dir / "cert_cancel_logs"
+        modelo = self.temp_dir / "modelo_cancel.pptx"
+        modelo.write_text("dummy")
+
+        df_aptos = pd.DataFrame([
+            {"Nome": "Ana Silva", "Email": "ana@anm.gov.br"},
+            {"Nome": "Bruno Souza", "Email": "bruno@anm.gov.br"},
+        ])
+
+        ev_cancel = threading.Event()
+        logs_cert = []
+        progs_cert = []
+
+        def fake_gerar_pdf(linha, **kwargs):
+            out = kwargs["pasta_pdf"] / f"CERT_{nome_seguro_arquivo(linha['Nome'])}.pdf"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("pdf")
+            ev_cancel.set()  # Cancela logo após o 1º certificado
+            return out
+
+        fake_ppt = MagicMock()
+        with patch.object(cert_mod.win32, "Dispatch", return_value=fake_ppt), \
+             patch.object(cert_mod, "gerar_pdf_pessoa", side_effect=fake_gerar_pdf):
+            df_res = cert_mod.gerar_todos_certificados(
+                df_aptos=df_aptos,
+                modelo_powerpoint=modelo,
+                pasta_ppt=None,
+                pasta_pdf=pasta_pdf,
+                pasta_logs=pasta_logs,
+                config={"NOME_DO_CURSO": "Teste"},
+                on_log=lambda n, m: logs_cert.append((n, m)),
+                on_progress=lambda a, t, d: progs_cert.append((a, t, d)),
+                cancel_event=ev_cancel,
+            )
+
+        self.assertEqual(len(df_res), 1)
+        self.assertTrue(any(n == "aviso" and "cancelada" in m.lower() for n, m in logs_cert))
+        fake_ppt.Quit.assert_called_once()
+
+        # 3. Testa callbacks e cancelamento em juntar_certificados_pdf
+        writer = PdfWriter()
+        writer.add_blank_page(width=100, height=100)
+        with open(pasta_pdf / "CERT_EXTRA.pdf", "wb") as f:
+            writer.write(f)
+        ev_pdf = threading.Event()
+        ev_pdf.set()
+        with self.assertRaises(InterruptedError):
+            cert_mod.juntar_certificados_pdf(
+                pasta_pdf,
+                self.temp_dir / "saida_cancel" / "junto.pdf",
+                cancel_event=ev_pdf,
+            )
+        self.assertFalse((self.temp_dir / "saida_cancel" / "junto.pdf").exists())
+
+        # 4. Testa callbacks, on_item_status e cancelamento em enviar_todos_emails (mock Outlook)
+        pasta_pdf_em = self.temp_dir / "email_cancel_pdf"
+        pasta_logs_em = self.temp_dir / "email_cancel_logs"
+        pasta_pdf_em.mkdir()
+        (pasta_pdf_em / "CERT_ANA_SILVA.pdf").write_text("pdf")
+        (pasta_pdf_em / "CERT_BRUNO_SOUZA.pdf").write_text("pdf")
+
+        ev_email = threading.Event()
+        itens_status = []
+        logs_em = []
+        progs_em = []
+
+        def on_item(reg):
+            itens_status.append(reg)
+            ev_email.set()  # Cancela logo após o 1º envio
+
+        fake_outlook = MagicMock()
+        fake_outlook.CreateItem.return_value = MagicMock()
+        with patch.object(email_mod, "conectar_outlook", return_value=fake_outlook):
+            df_env = email_mod.enviar_todos_emails(
+                df_aptos=df_aptos,
+                pasta_pdf=pasta_pdf_em,
+                pasta_logs=pasta_logs_em,
+                config={"NOME_DO_CURSO": "Teste", "CORPO_EMAIL": "Olá {nome}"},
+                on_log=lambda n, m: logs_em.append((n, m)),
+                on_progress=lambda a, t, d: progs_em.append((a, t, d)),
+                on_item_status=on_item,
+                cancel_event=ev_email,
+                intervalo_segundos=0.0,
+            )
+
+        self.assertEqual(len(df_env), 1)
+        self.assertEqual(len(itens_status), 1)
+        self.assertEqual(itens_status[0]["Status"], "ENVIADO")
+        self.assertTrue(any(pasta_logs_em.glob("log_envio_*.xlsx")))
 
 
 if __name__ == "__main__":
