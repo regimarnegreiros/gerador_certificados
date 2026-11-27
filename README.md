@@ -1,74 +1,76 @@
-# Gerador de Certificados
+# Gerador de Certificados — ANM (DIVCAM / SGP)
 
-Sistema automatizado para gerenciamento de cursos, validação de listas de presença do Microsoft Teams, consolidação de dados em planilhas Excel, geração de certificados individuais e unificados (PowerPoint/PDF) e envio automatizado via Microsoft Outlook.
-
-Desenvolvido para a **Agência Nacional de Mineração (ANM)** para automatizar os fluxos de capacitação e gestão de pessoas.
+Aplicativo desktop em Python/PySide6 para gerenciamento de capacitações da **Agência Nacional de Mineração (ANM — DIVCAM / SGP)**: apuração de presenças do Microsoft Teams, aplicação de justificativas de faltas, consolidação de indicadores em Excel, emissão de certificados individuais e unificados (PowerPoint/PDF) e envio automatizado via Microsoft Outlook.
 
 ---
 
-## 📁 Estrutura do Projeto
+## Principais Recursos
+
+- **Interface Desktop Unificada (5 etapas):**
+  1. **Arquivos e Horários:** importação por arrastar-e-soltar (*drag-and-drop*) da lista de convidados e das listas de presença do Teams, com ordenação cronológica automática e edição de horário por encontro.
+  2. **Dados e E-mail:** pré-preenchimento automático da carga horária (soma do *Tempo médio de participação* da Seção `1. Resumo`), datas de início/término/emissão, percentuais mínimos, lista de e-mails ignorados e editor do texto de e-mail com pré-visualização.
+  3. **Relatório e Justificativas:** geração assíncrona da planilha Excel completa e matriz interativa para abonar ausências (*Justificado*) diretamente pela interface com recálculo automático.
+  4. **Certificados:** conferência final de participantes aptos e geração em lote de PDFs individuais e arquivo único consolidado (`.pptx`/`.pptm` e `.pdf`) via PowerPoint COM.
+  5. **Envio de E-mails:** abertura de rascunho de conferência no Outlook, disparo em massa com tabela de status em tempo real e exportação do log em `.xlsx`.
+- **Recursos Globais Compartilhados:** cadastro único da lista oficial de servidores (`.xlsx`) e do modelo institucional de certificado (`.pptx`/`.pptm`) válidos para todos os cursos.
+- **Armazenamento Seguro e Compatível com EDR corporativo (TrendAI Vision One):**
+  - Diretório curto gerenciado automaticamente em `C:\ANM_Certificados\` (com fallback automático para `%LOCALAPPDATA%\ANM_Certificados\` se sem permissão em `C:\`).
+  - Persistência versionada em JSON (`curso.json` e `app_config.json` com `schema_version = 1`).
+  - Empacotamento `--onedir --windowed --noupx` sem extração de binários em `%TEMP%`.
+
+---
+
+## Estrutura do Projeto
 
 ```text
 gerador_certificados/
 │
-├── core/                       # Módulos centrais reutilizáveis
-│   ├── caminhos.py             # Tratamento de caminhos longos do Windows (MAX_PATH / \\?\)
-│   ├── certificados.py         # Manipulação de PPTX e conversão/junção de PDFs
-│   ├── config.py               # Leitura e parsing de variaveis.txt
-│   ├── emails.py               # Integração COM com o Microsoft Outlook
-│   ├── presenca.py             # Processamento de presenças, cruzamento de dados e Excel
-│   ├── ui.py                   # Interface de terminal (Cores ANSI, menus e prompts)
-│   └── validator.py            # Validação estrutural de arquivos e variáveis
+├── app.py                      # Ponto de entrada da aplicação GUI (QT_OPENGL=software)
+├── core/                       # Regras de negócio desacopladas de UI
+│   ├── app_paths.py            # Gerenciamento do diretório curto C:\ANM_Certificados\
+│   ├── caminhos.py             # Tratamento de caminhos longos Windows (MAX_PATH / \\?\)
+│   ├── certificados.py         # Preenchimento de PPTX, conversão e junção de PDFs
+│   ├── config.py               # Modelos dataclass, validações e curso.json versionado
+│   ├── cursos_repo.py          # CRUD de cursos, autopreenchimento e justificativas
+│   ├── emails.py               # Automação COM com o Microsoft Outlook
+│   ├── eventos.py              # Contratos de log, progresso e cancelamento cooperativo
+│   ├── presenca.py             # Parser Teams (1. Resumo / 2 / 3), recorte e Excel
+│   └── validator.py            # Auditoria de arquivos e prevenção de caminhos profundos
 │
-├── templates/                  # Modelos padrão copiados para cada curso criado
-│   ├── leia-me_template.txt    # Instruções para o usuário final
-│   └── variaveis_template.txt  # Arquivo de configuração de cada curso
+├── gui/                        # Interface gráfica em PySide6-Essentials (QSS institucional ANM)
+│   ├── file_actions.py         # Abertura no sistema e "Salvar cópia em..."
+│   ├── main_window.py          # Janela principal, sidebar fixa, workers e log recolhível
+│   ├── theme.py                # Paleta institucional ANM/Gov.br e QSS plano
+│   ├── workers.py              # QThread com CoInitialize/CoUninitialize seguro
+│   ├── tabs/                   # 5 abas do fluxo de capacitação
+│   └── widgets/                # DropZoneWidget (drag-and-drop) e LogPanelWidget
 │
-├── tests/                      # Suíte de testes automatizados
-│   ├── test_suite.py           # Testes unitários de todos os módulos
-│   └── test_e2e_pipeline.py    # Teste de ponta a ponta (E2E) com dados sintéticos
-│
-├── criar_curso.py              # Script/Executável principal de gerenciamento
-├── gerar_relatorio.py          # Etapa 1: Apuração de presenças e geração do Excel
-├── gerar_certificados.py       # Etapa 2: Geração dos certificados (PPTX/PDF)
-├── enviar_emails.py            # Etapa 3: Disparo de e-mails com certificados anexos
-│
-├── build_executaveis.py        # Automação de compilação dos 4 binários via PyInstaller
-├── version_info.txt            # Metadados de versão Windows para os executáveis
-├── requirements.txt            # Dependências Python do projeto
-└── .gitignore                  # Regras de exclusão do Git
+├── tests/                      # Suíte de testes automatizados (core + GUI)
+├── gerador_certificados.spec   # Configuração PyInstaller enxuta (--onedir --noupx)
+├── build_executavel.py         # Script de automação do build distribuível
+├── version_info.txt            # Metadados de versão Windows ANM
+└── requirements.txt            # Dependências Python
 ```
 
 ---
 
-## 🚀 Instalação e Ambiente de Desenvolvimento
+## Instalação e Execução em Desenvolvimento
 
 ### Pré-requisitos
-- Python 3.10 ou superior (testado no Windows)
-- Microsoft PowerPoint e Microsoft Outlook instalados (necessários para a conversão de PPTX em PDF e envio de e-mails)
+- Windows 10 ou Windows 11 (64 bits)
+- Python 3.10 ou superior
+- Microsoft PowerPoint e Microsoft Outlook instalados (necessários na máquina para conversão de certificados em PDF e disparo de e-mails)
 
-### 1. Clonar o repositório
-```bash
-git clone https://github.com/SEU_USUARIO/gerador_certificados.git
-cd gerador_certificados
-```
-
-### 2. Criar e ativar um ambiente virtual (recomendado)
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
-```
-
-### 3. Instalar as dependências
-```bash
 pip install -r requirements.txt
+python app.py
 ```
 
 ---
 
-## 🧪 Testes Automatizados
-
-Para executar toda a suíte de testes unitários e de integração:
+## Testes Automatizados
 
 ```bash
 python -m unittest discover tests
@@ -76,23 +78,18 @@ python -m unittest discover tests
 
 ---
 
-## 📦 Compilação dos Executáveis (.exe)
+## Empacotamento do Aplicativo (`dist/GeradorCertificadosANM/`)
 
-O script `build_executaveis.py` automatiza a compilação de todos os 4 executáveis com PyInstaller em modo `--onefile`:
+Gera a pasta distribuível com `GeradorCertificadosANM.exe` em modo `--onedir --windowed --noupx` usando `PySide6-Essentials` enxuto:
 
 ```bash
-# Compilar todos os 4 executáveis:
-python build_executaveis.py
-
-# Ou forçar recompilação completa:
-python build_executaveis.py --force
+python build_executavel.py
 ```
 
-> **Nota sobre Releases:** Os executáveis gerados (`.exe`) são ignorados pelo Git devido ao tamanho dos binários. Para distribuí-los aos usuários finais, utilize a aba de **Releases** do GitHub.
+Ao final, a pasta `dist/GeradorCertificadosANM/` conterá o executável pronto para uso ou compactação em `.zip` para distribuição (os artefatos de `build/` e `dist/` permanecem ignorados pelo `.gitignore`).
 
 ---
 
-## 📄 Licença
+## Licença
 
-Este projeto está sob a licença MIT. Consulte o arquivo `LICENSE` para mais detalhes.
-
+Este projeto está sob a licença MIT. Consulte o arquivo [LICENSE](LICENSE) para mais detalhes.

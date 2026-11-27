@@ -9,6 +9,7 @@ dist/
 _bin/
 *.exe
 *.spec
+!gerador_certificados.spec
 
 # Pastas de saída e dados de cursos gerados localmente
 saida/

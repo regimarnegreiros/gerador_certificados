@@ -5,8 +5,8 @@
 #
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(2, 0, 0, 0),
+    prodvers=(2, 0, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -19,14 +19,14 @@ VSVersionInfo(
       [
         StringTable(
           '041604b0',
-          [StringStruct('CompanyName', 'Agência Nacional de Mineração - ANM'),
-           StringStruct('FileDescription', 'Sistema de Emissão e Gestão de Certificados ANM'),
-           StringStruct('FileVersion', '1.0.0.0'),
-           StringStruct('InternalName', 'gerar_certificados'),
+          [StringStruct('CompanyName', 'Agência Nacional de Mineração - ANM (DIVCAM / SGP)'),
+           StringStruct('FileDescription', 'Gerador de Certificados e Gestão de Presenças ANM'),
+           StringStruct('FileVersion', '2.0.0.0'),
+           StringStruct('InternalName', 'GeradorCertificadosANM'),
            StringStruct('LegalCopyright', 'Copyright (C) 2026 Agência Nacional de Mineração'),
-           StringStruct('OriginalFilename', 'gerar_certificados.exe'),
+           StringStruct('OriginalFilename', 'GeradorCertificadosANM.exe'),
            StringStruct('ProductName', 'Gerador de Certificados ANM'),
-           StringStruct('ProductVersion', '1.0.0.0')])
+           StringStruct('ProductVersion', '2.0.0.0')])
       ]), 
     VarFileInfo([VarStruct('Translation', [1046, 1200])])
   ]
