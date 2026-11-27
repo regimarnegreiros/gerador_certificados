@@ -239,8 +239,18 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertIn("Olá {nome}", config["CORPO_EMAIL"])
 
     def test_corpo_email_sem_comentarios_indesejados(self):
-        # 1. Testa com o arquivo de template oficial (que possui explicações e divisórias # ---)
-        caminho_template = diretorio_raiz / "templates" / "variaveis_template.txt"
+        # 1. Testa arquivo com explicações e divisórias # --- antes/fora do bloco
+        caminho_template = self.temp_dir / "variaveis_template_simulado.txt"
+        caminho_template.write_text(
+            "NOME_DO_CURSO = Curso Teste\n"
+            "ASSUNTO_EMAIL = Certificado - Curso {CURSO}\n"
+            "[INICIO_CORPO_EMAIL]\n"
+            "# --- separador\n"
+            "Prezada(o) {nome},\n\n"
+            "Encaminhamos seu certificado.\n"
+            "[FIM_CORPO_EMAIL]\n",
+            encoding="utf-8",
+        )
         config_template = carregar_variaveis(caminho_template)
         corpo = config_template["CORPO_EMAIL"]
         self.assertFalse(corpo.startswith("#"))
@@ -773,13 +783,14 @@ class TestGeradorCertificados(unittest.TestCase):
         self.assertIn("Carla Dias", prs_resultado.slides[0].shapes[0].text_frame.text)
         self.assertIn("Daniel Lima", prs_resultado.slides[1].shapes[0].text_frame.text)
 
-    def test_import_enviar_emails_e_simbolos(self):
-        import enviar_emails
-        self.assertTrue(hasattr(enviar_emails, "obter_configuracao"))
-        self.assertTrue(callable(enviar_emails.obter_configuracao))
-        self.assertTrue(hasattr(enviar_emails, "vermelho"))
-        self.assertTrue(callable(enviar_emails.vermelho))
-        self.assertTrue(hasattr(enviar_emails, "encontrar_relatorio_presenca"))
+    def test_import_core_emails_e_simbolos(self):
+        import core.emails as core_emails
+        self.assertTrue(hasattr(core_emails, "enviar_email_teste"))
+        self.assertTrue(callable(core_emails.enviar_email_teste))
+        self.assertTrue(hasattr(core_emails, "enviar_todos_emails"))
+        self.assertTrue(callable(core_emails.enviar_todos_emails))
+        self.assertTrue(hasattr(core_emails, "localizar_certificado_pdf"))
+        self.assertTrue(callable(core_emails.localizar_certificado_pdf))
 
     def test_reduzir_nome_curso_para_arquivo(self):
         from core.caminhos import reduzir_nome_curso_para_arquivo
