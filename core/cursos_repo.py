@@ -315,6 +315,12 @@ def extrair_metadados_resumo_presenca(arquivo: Path) -> EncontroConfig:
     data_str = resumo.get("data", "") or ""
     horario_inicio = resumo.get("horario_inicio", "") or ""
     horario_fim = resumo.get("horario_fim", "") or ""
+    if horario_inicio and horario_fim:
+        try:
+            if parse_time(horario_fim) <= parse_time(horario_inicio):
+                horario_fim = ""
+        except Exception:
+            horario_fim = ""
 
     hora_ini_raw = resumo.get("hora_inicio_raw", "") or ""
     if not data_str and hora_ini_raw:

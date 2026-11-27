@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self.curso_atual_cfg: Optional[CursoConfig] = None
         self._cursos_cache: List[Dict[str, Any]] = []
         self._worker_ativo: Optional[BaseTaskWorker] = None
+        self._aba_anterior_idx: int = 0
 
         self.setWindowTitle("Gerador de Certificados — ANM (DIVCAM / SGP)")
         self.resize(1180, 740)
@@ -287,6 +288,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_relatorio, "3. Relatório e Justificativas")
         self.tabs.addTab(self.tab_certificados, "4. Certificados")
         self.tabs.addTab(self.tab_emails, "5. Envio de E-mails")
+        self.tabs.currentChanged.connect(self._ao_trocar_aba)
 
         layout.addWidget(self.tabs, 1)
         return pag
@@ -405,9 +407,33 @@ class MainWindow(QMainWindow):
         self.curso_atual_pasta = None
         self.curso_atual_cfg = None
         self.btn_excluir_curso.setEnabled(False)
+        for aba in (self.tab_arquivos, self.tab_config, self.tab_relatorio, self.tab_certificados, self.tab_emails):
+            aba._pasta_curso = None
+            aba._cfg = None
         self.stack_conteudo.setCurrentWidget(self.pagina_vazia)
 
+    def _salvar_tab_config_se_pendente(self, exibir_alerta_erro: bool = False) -> bool:
+        if self.curso_atual_pasta is None or not self.tab_config.tem_alteracoes_nao_salvas():
+            return True
+        return self.tab_config.salvar_configuracoes(exibir_alerta_erro=exibir_alerta_erro)
+
+    def _ao_trocar_aba(self, novo_idx: int) -> None:
+        """Garante salvamento automático de alterações pendentes na Aba 2 antes de gerar saídas."""
+        anterior = self._aba_anterior_idx
+        if anterior == 1 and novo_idx != 1:
+            exigir_valido = novo_idx >= 2
+            if not self._salvar_tab_config_se_pendente(exibir_alerta_erro=exigir_valido):
+                if exigir_valido:
+                    self.tabs.blockSignals(True)
+                    self.tabs.setCurrentIndex(1)
+                    self.tabs.blockSignals(False)
+                    self._aba_anterior_idx = 1
+                    return
+        self._aba_anterior_idx = novo_idx
+
     def _carregar_curso_na_tela(self, id_curso: str) -> None:
+        if self.curso_atual_id and self.curso_atual_id != id_curso:
+            self._salvar_tab_config_se_pendente(exibir_alerta_erro=False)
         try:
             pasta, cfg = obter_curso(id_curso, raiz=self.raiz_dados)
         except Exception as exc:
@@ -432,6 +458,7 @@ class MainWindow(QMainWindow):
         self.tab_relatorio.carregar_curso(pasta, cfg)
         self.tab_certificados.carregar_curso(pasta, cfg)
         self.tab_emails.carregar_curso(pasta, cfg)
+        self._aba_anterior_idx = self.tabs.currentIndex()
         self.stack_conteudo.setCurrentWidget(self.pagina_curso)
 
     def _ao_curso_modificado_na_aba(self, cfg_atualizado: CursoConfig) -> None:
@@ -602,7 +629,13 @@ class MainWindow(QMainWindow):
                 return False
 
         try:
+            id_excluido = self.curso_atual_id
             excluir_curso(self.curso_atual_pasta)
+            app_cfg_path = obter_caminho_app_config(self.raiz_dados)
+            app_cfg = carregar_app_config(app_cfg_path)
+            if app_cfg.ultimo_curso_id == id_excluido:
+                app_cfg.ultimo_curso_id = ""
+                salvar_app_config(app_cfg_path, app_cfg)
             self._limpar_selecao_curso()
             self._carregar_lista_cursos(selecionar_ultimo=False)
             self.log_panel.registrar_log("info", f"Curso excluído: {nome}")
@@ -625,4 +658,5 @@ class MainWindow(QMainWindow):
                 return
             self._worker_ativo.solicitar_cancelamento()
             self._worker_ativo.wait(3000)
+        self._salvar_tab_config_se_pendente(exibir_alerta_erro=False)
         super().closeEvent(event)

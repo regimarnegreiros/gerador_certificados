@@ -502,6 +502,96 @@ class TestGuiBase(unittest.TestCase):
 
         janela.close()
 
+    def test_integracao_borda_troca_abas_exclusao_ultimo_curso_e_relatorio_desatualizado(self):
+        from pptx import Presentation
+        from PySide6.QtWidgets import QMessageBox
+        from core.app_paths import obter_caminho_app_config
+        from core.config import carregar_app_config
+        from core.cursos_repo import extrair_metadados_resumo_presenca, obter_curso
+
+        raiz = self.temp_dir / "raiz_bordas"
+        staging = self.temp_dir / "staging_bordas"
+        staging.mkdir()
+
+        # 1. CSV curto com início/término no mesmo minuto (08:00) não gera janela inválida (fim <= ini)
+        arq_curto = staging / "dia_1_curto.csv"
+        arq_curto.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/10/26, 8:00:00 AM\n"
+            "Hora de término\t8/10/26, 8:00:00 AM\n"
+            "Duração da reunião\t0s\n"
+            "Tempo médio de participação\t1h 0m 0s\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n"
+            "Alice Silva\talice@anm.gov.br\t1h 0m 0s\n",
+            encoding="utf-16",
+        )
+        meta_curta = extrair_metadados_resumo_presenca(arq_curto)
+        self.assertEqual(meta_curta.horario_inicio, "08:00")
+        self.assertEqual(meta_curta.horario_fim, "")
+
+        arq_serv = staging / "servidores.xlsx"
+        pd.DataFrame({
+            "NOME SERVIDOR": ["ALICE SILVA"],
+            "UORG": ["SGP"],
+            "EMAIL": ["alice@anm.gov.br"],
+        }).to_excel(arq_serv, index=False)
+
+        arq_mod = staging / "modelo.pptx"
+        prs = Presentation()
+        prs.slides.add_slide(prs.slide_layouts[6])
+        prs.save(arq_mod)
+
+        arq_conv = staging / "conv.csv"
+        arq_conv.write_text("Relatório\nData\nNome\nALICE SILVA <alice@anm.gov.br>\n", encoding="utf-8")
+
+        janela = MainWindow(raiz_dados=raiz)
+        janela._ao_definir_servidores_global([str(arq_serv)])
+        janela._ao_definir_modelo_global([str(arq_mod)])
+        id_curso = janela.acao_novo_curso("Curso Bordas")
+        janela.tab_arquivos._ao_importar_convidados([str(arq_conv)])
+        janela.tab_arquivos._ao_importar_presencas([str(arq_curto)])
+
+        # 2. Editar Aba 2 e trocar direto para Aba 3 salva automaticamente sem perder alterações
+        janela.tabs.setCurrentIndex(1)
+        janela.tab_config.spin_custo_total.setValue(3200.0)
+        self.assertTrue(janela.tab_config.tem_alteracoes_nao_salvas())
+        janela.tabs.setCurrentIndex(2)
+        _, cfg_auto = obter_curso(id_curso, raiz=raiz)
+        self.assertEqual(cfg_auto.custo_total_em_reais, 3200.0)
+
+        with patch.object(QMessageBox, "critical", side_effect=lambda _p, t, m: self.fail(f"CRIT: {t}: {m}")):
+            janela.tab_relatorio.acao_gerar_relatorio()
+            self._aguardar_worker(janela)
+
+        # 3. Adicionar nova lista após relatório alerta relatório desatualizado e bloqueia justificativa antiga
+        arq_d2 = staging / "dia_2.csv"
+        arq_d2.write_text(
+            "1. Resumo\n"
+            "Hora de início\t8/11/26, 8:00:00 AM\n"
+            "Hora de término\t8/11/26, 12:00:00 PM\n"
+            "Duração da reunião\t4h 0m 0s\n"
+            "Tempo médio de participação\t4h 0m 0s\n"
+            "2. Participantes\n"
+            "Nome\tEmail\tDuração da Reunião\n",
+            encoding="utf-16",
+        )
+        janela.tab_arquivos._ao_importar_presencas([str(arq_d2)])
+        self.assertIn("Listas alteradas", janela.tab_relatorio.lbl_resumo.text())
+
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            janela.tab_relatorio._ao_duplo_clique_celula(0, 2)
+            mock_warn.assert_called_once()
+            self.assertIn("desatualizado", mock_warn.call_args[0][1].lower())
+
+        # 4. Excluir único curso limpa último ID persistido e referências das abas
+        self.assertTrue(janela.acao_excluir_curso(confirmar=False))
+        self.assertEqual(carregar_app_config(obter_caminho_app_config(raiz)).ultimo_curso_id, "")
+        self.assertIsNone(janela.tab_relatorio._pasta_curso)
+        self.assertIsNone(janela.tab_emails._pasta_curso)
+
+        janela.close()
+
 
 if __name__ == "__main__":
     unittest.main()

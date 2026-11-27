@@ -321,6 +321,28 @@ class TabConfigWidget(QWidget):
         base.campos_editados_manualmente = sorted(editados)
         return base
 
+    def tem_alteracoes_nao_salvas(self) -> bool:
+        """Retorna True se o formulário difere do último CursoConfig carregado/salvo."""
+        if self._cfg is None or self._pasta_curso is None:
+            return False
+        atual = self._construir_config_do_formulario()
+        ref = self._cfg
+        return any([
+            atual.nome_do_curso != ref.nome_do_curso,
+            abs(float(atual.carga_horaria) - float(ref.carga_horaria or 0.0)) > 1e-6,
+            abs(float(atual.custo_total_em_reais) - float(ref.custo_total_em_reais or 0.0)) > 1e-6,
+            atual.data_inicio != ref.data_inicio,
+            atual.data_fim != ref.data_fim,
+            atual.data_emissao != ref.data_emissao,
+            atual.local_emissao != (ref.local_emissao or DEFAULT_LOCAL_EMISSAO),
+            abs(float(atual.percentual_minimo_carga) - float(ref.percentual_minimo_carga)) > 1e-6,
+            abs(float(atual.percentual_minimo_encontros) - float(ref.percentual_minimo_encontros)) > 1e-6,
+            int(atual.tempo_minimo_presenca_minutos) != int(ref.tempo_minimo_presenca_minutos),
+            atual.ignorar_emails != list(ref.ignorar_emails),
+            atual.assunto_email != (ref.assunto_email or DEFAULT_ASSUNTO_EMAIL),
+            atual.corpo_email != ref.corpo_email,
+        ])
+
     def salvar_configuracoes(self, exibir_alerta_erro: bool = True) -> bool:
         """Valida o formulário atual e grava em curso.json."""
         if self._pasta_curso is None or self._cfg is None:

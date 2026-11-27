@@ -262,14 +262,18 @@ class TabRelatorioWidget(QWidget):
             self._matriz = {"titulos_encontros": [], "participantes": []}
 
         parts = self._matriz.get("participantes", [])
+        titulos = self._matriz.get("titulos_encontros", [])
         total = len(parts)
         aptos = sum(1 for p in parts if str(p.get("apto_ch", "")).upper() == "APTO")
         nao_aptos = total - aptos
         qtd_just = len(self._cfg.justificativas) if self._cfg else 0
+        desatualizado = self._cfg is not None and len(titulos) != len(self._cfg.encontros)
+        aviso_desat = "  |  ⚠ Listas alteradas: gere o relatório novamente" if desatualizado else ""
 
         self.lbl_resumo.setText(
             f"Arquivo: {self._caminho_relatorio.name}  |  "
-            f"Convocados: {total}  |  Aptos: {aptos}  |  Não aptos: {nao_aptos}  |  Justificativas aplicadas: {qtd_just}"
+            f"Convocados: {total}  |  Aptos: {aptos}  |  Não aptos: {nao_aptos}  |  "
+            f"Justificativas aplicadas: {qtd_just}{aviso_desat}"
         )
         self._renderizar_matriz()
 
@@ -499,6 +503,14 @@ class TabRelatorioWidget(QWidget):
         if self._pasta_curso is None or self._cfg is None:
             return
         titulos = self._matriz.get("titulos_encontros", [])
+        if len(titulos) != len(self._cfg.encontros):
+            QMessageBox.warning(
+                self,
+                "Relatório desatualizado",
+                "As listas de presença foram alteradas após a geração deste relatório.\n"
+                "Clique em 'Validar e Gerar Relatório de Presenças' antes de aplicar justificativas.",
+            )
+            return
         if col < 2 or col >= 2 + len(titulos):
             return
 
