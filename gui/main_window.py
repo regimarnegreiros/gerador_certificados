@@ -36,6 +36,8 @@ from core.cursos_repo import (
     obter_curso,
     obter_status_recursos_globais,
 )
+from gui.tabs.tab_arquivos import TabArquivosWidget
+from gui.tabs.tab_config import TabConfigWidget
 from gui.widgets.drop_zone import DropZoneWidget
 from gui.widgets.log_panel import LogPanelWidget
 
@@ -175,6 +177,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 14, 16, 12)
         layout.setSpacing(10)
 
+        self.log_panel = LogPanelWidget()
+
         self.stack_conteudo = QStackedWidget()
         self.pagina_vazia = self._criar_pagina_vazia()
         self.pagina_curso = self._criar_pagina_curso()
@@ -183,8 +187,6 @@ class MainWindow(QMainWindow):
         self.stack_conteudo.addWidget(self.pagina_curso)
 
         layout.addWidget(self.stack_conteudo, 1)
-
-        self.log_panel = LogPanelWidget()
         layout.addWidget(self.log_panel)
 
         return container
@@ -249,14 +251,16 @@ class MainWindow(QMainWindow):
 
         # Abas principais (5 etapas)
         self.tabs = QTabWidget()
-        self.tab_arquivos = self._criar_aba_placeholder(
-            "1. Arquivos e Horários",
-            "Aqui serão importados os arquivos de convidados (.csv) e listas de presença (.csv/.tsv), com edição de horários por encontro. (Etapa 6)",
-        )
-        self.tab_config = self._criar_aba_placeholder(
-            "2. Dados e E-mail",
-            "Aqui ficarão as variáveis pré-preenchidas automaticamente a partir do resumo dos CSVs e o texto do e-mail. (Etapa 6)",
-        )
+        self.tab_arquivos = TabArquivosWidget()
+        self.tab_arquivos.curso_atualizado.connect(self._ao_curso_modificado_na_aba)
+        self.tab_arquivos.log_solicitado.connect(self.log_panel.registrar_log)
+        self.tab_arquivos.avancar_solicitado.connect(lambda: self.tabs.setCurrentIndex(1))
+
+        self.tab_config = TabConfigWidget()
+        self.tab_config.curso_atualizado.connect(self._ao_curso_modificado_na_aba)
+        self.tab_config.log_solicitado.connect(self.log_panel.registrar_log)
+        self.tab_config.avancar_solicitado.connect(lambda: self.tabs.setCurrentIndex(2))
+
         self.tab_relatorio = self._criar_aba_placeholder(
             "3. Relatório e Justificativas",
             "Aqui será gerado o relatório Excel e exibida a matriz interativa para justificar faltas pela interface. (Etapa 7)",
@@ -356,7 +360,7 @@ class MainWindow(QMainWindow):
 
         self._filtrar_lista_cursos(self.txt_busca_curso.text(), id_selecionar=alvo_id)
 
-    def _filtrar_lista_cursos(self, texto: str = "", id_selecionar: Optional[str] = None) -> None:
+    def _popular_lista_cursos_widget(self, texto: str = "", id_selecionar: Optional[str] = None) -> Optional[QListWidgetItem]:
         termo = (texto or "").strip().lower()
         alvo = id_selecionar or self.curso_atual_id
 
@@ -374,6 +378,10 @@ class MainWindow(QMainWindow):
                 item_para_selecionar = item
 
         self.lista_cursos.blockSignals(False)
+        return item_para_selecionar
+
+    def _filtrar_lista_cursos(self, texto: str = "", id_selecionar: Optional[str] = None) -> None:
+        item_para_selecionar = self._popular_lista_cursos_widget(texto=texto, id_selecionar=id_selecionar)
 
         if item_para_selecionar is not None:
             self.lista_cursos.setCurrentItem(item_para_selecionar)
@@ -419,7 +427,30 @@ class MainWindow(QMainWindow):
             salvar_app_config(app_cfg_path, app_cfg)
 
         self._atualizar_cabecalho_curso()
+        self.tab_arquivos.carregar_curso(pasta, cfg)
+        self.tab_config.carregar_curso(pasta, cfg)
         self.stack_conteudo.setCurrentWidget(self.pagina_curso)
+
+    def _ao_curso_modificado_na_aba(self, cfg_atualizado: CursoConfig) -> None:
+        """Sincroniza cabeçalho, abas irmãs e badges da sidebar após edição em uma aba."""
+        if self.curso_atual_pasta is None:
+            return
+        self.curso_atual_cfg = cfg_atualizado
+        self._atualizar_cabecalho_curso()
+        sender = self.sender()
+        if sender is not self.tab_arquivos:
+            self.tab_arquivos.carregar_curso(self.curso_atual_pasta, cfg_atualizado)
+        if sender is not self.tab_config:
+            self.tab_config.carregar_curso(self.curso_atual_pasta, cfg_atualizado)
+        self._atualizar_sidebar_sem_recarregar_abas()
+
+    def _atualizar_sidebar_sem_recarregar_abas(self) -> None:
+        self._cursos_cache = listar_cursos(raiz=self.raiz_dados)
+        item_sel = self._popular_lista_cursos_widget(texto=self.txt_busca_curso.text(), id_selecionar=self.curso_atual_id)
+        if item_sel is not None:
+            self.lista_cursos.blockSignals(True)
+            self.lista_cursos.setCurrentItem(item_sel)
+            self.lista_cursos.blockSignals(False)
 
     def _atualizar_cabecalho_curso(self) -> None:
         if self.curso_atual_cfg is None:
